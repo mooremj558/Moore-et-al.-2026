@@ -1,0 +1,1891 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+library(tidyverse)
+library(GenomicRanges)
+library(InteractionSet)
+library(clusterProfiler)
+library(tibble)
+library(S4Vectors)
+library(ComplexHeatmap)
+library(EnhancedVolcano)
+library(data.table)
+library(patchwork)
+library(ggplotify)
+library(grid)
+library(magick)
+```
+
+```{r}
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/4_loop")
+
+loop_counts = read.csv("diffloops_old/1_loop_anno/loop_counts.txt", sep = "\t")
+loop_counts$Unchanged = loop_counts$all_loops - loop_counts$DMSO_loops - loop_counts$DP_loops
+
+data_long <- loop_counts %>%
+  pivot_longer(
+    cols = c(DMSO_loops, DP_loops, Unchanged),  # Columns to pivot
+    names_to = "Loop Type",    # New column for original column names (P10, P50, P90)
+    values_to = "value"       # New column for the values (10, 50, 90, etc.)
+  )
+
+p <- ggplot(data_long, aes(x=cellline, y=value, fill=`Loop Type`)) + geom_bar(position="stack", stat="identity", width=0.7) + 
+  xlab(NULL) + ylab("Number of Loops") + scale_fill_manual(values = c("#3d85c6","#f44336","#F6caba")) + theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+        panel.background = element_blank(), axis.line = element_line(colour = "black")) + scale_y_continuous(expand = c(0, 0)) + scale_x_discrete(expand = c(0, 0))
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/loop_anno.pdf"),height=5,width=5)
+print(p)
+dev.off()
+
+Fig_4A = p
+
+```
+
+```{r}
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/4_loop")
+
+data = read.table("2_loop_ctcf_deg/ctcf_loop_change_overlap.txt", header=TRUE)
+data=data[,c(1,3,5:7)]
+colnames(data)=c("cell","CTCF_only","DEG_only","Both","Neither")
+data1 = data |> pivot_longer(cols = !cell, names_to = "Loop_type", values_to = "count")
+data1$count = as.numeric(data1$count)
+
+#data1$cell <- factor(data1$bound_type, levels=c("Stable Boundary", "DMSO Boundary", "DP Boundary"))
+data1$Loop_type <- factor(data1$Loop_type, levels=c("CTCF_only","DEG_only","Both","Neither"))
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/ctcf_loop_changes.pdf"),height=5,width=5)
+p <- ggplot(data1, aes(x=cell, y=count, fill=Loop_type)) + geom_bar(position="stack", stat="identity", width=0.7) + 
+  xlab(NULL) + ylab("Number of Differential Loops") + ylim(0,7000) + 
+  theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+        panel.background = element_blank(), axis.line = element_line(colour = "black")) + 
+  scale_y_continuous(expand = c(0, 0)) + scale_x_discrete(expand = c(0, 0)) +
+  scale_fill_manual(values = c("#f44336","#3d85c6","purple","#F6caba")) + 
+  labs(fill="Loop Type")
+print(p)
+dev.off()
+
+Fig_4C = p
+
+```
+
+```{r}
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/4_loop")
+
+data = read.table("3_loop_tad/bound_loop_change_overlap.txt", header=TRUE)
+temp=data.frame(cell = data[,1], DMSO_loops = data[,2]/data[,5], DP_loops = data[,3]/data[,6], All_loops = data[,4]/data[,7])
+data=temp
+data1 = data |> pivot_longer(cols = !cell, names_to = "Loop_type", values_to = "count")
+data1$count = as.numeric(data1$count)
+data1$Loop_type <- factor(data1$Loop_type, levels=c("DMSO_loops","DP_loops","All_loops"))
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/bound_loop_changes.pdf"),height=5,width=5)
+p <- ggplot(data1, aes(x=cell, y=count, fill=Loop_type)) + geom_bar(position="dodge", stat="identity", width=0.7) + 
+  xlab(NULL) + ylab("Percentage of Loops Across Differential Boundaries") + ylim(0,7000) + 
+  theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+        panel.background = element_blank(), axis.line = element_line(colour = "black")) + 
+  scale_y_continuous(expand = c(0, 0)) + scale_x_discrete(expand = c(0, 0)) +
+  scale_fill_manual(values = c("#3d85c6","#f44336","#F6caba")) + 
+  labs(fill="Loop Type")
+print(p)
+dev.off()
+
+Supp_5C = p
+
+```
+
+```{r}
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/4_loop")
+files = list.files("4_loop_sep_deg/", pattern = "dloops.txt")
+
+loop_dist = data.frame()
+for (i in 1:length(files)) {
+  temp = read.table(paste0("4_loop_sep_deg/",files[i]), header=TRUE)
+  temp1 = temp$distance.bp. %>% as.data.frame()
+  colnames(temp1)[1] = "distance"
+  #temp1$sample = paste(strsplit(files[i],"_")[[1]][3:4], collapse = "_")
+  temp1$cell = strsplit(files[i],"_")[[1]][3]
+  temp1$treatment = strsplit(files[i],"_")[[1]][4]
+  loop_dist = rbind(loop_dist,temp1)
+}
+
+library(gghalves)
+
+stat.test <- loop_dist %>%
+  group_by(cell) %>%
+  wilcox_test(distance ~ treatment) %>%
+  add_significance() %>% add_xy_position()
+
+stat.test$y.position=7.5
+stat.test$xmax=c(1.2,2.2,3.2,4.2,5.2)
+stat.test$xmin=c(0.8,1.8,2.8,3.8,4.8)
+
+p <- ggplot(loop_dist, aes(x = cell, y = distance, fill = treatment)) +
+
+  geom_half_violin(
+    data = subset(loop_dist, treatment == "DMSO"),
+    side = "l",
+    trim = FALSE,
+    scale = "width"
+  ) +
+
+  geom_half_violin(
+    data = subset(loop_dist, treatment == "DP"),
+    side = "r",
+    trim = FALSE,
+    scale = "width"
+  ) +
+
+  theme_classic() +
+  theme(text = element_text(size = 14)) +
+  scale_fill_manual(values = c("DMSO" = "#F8766D", "DP" = "#00BFC4")) +
+  xlab("") +
+  ylab("Distance Between Anchors") +
+  labs(fill="Treatment")
+
+p = p +
+scale_y_log10() +
+stat_pvalue_manual(
+  stat.test,
+  label = "p.signif",
+  tip.length = 0.01
+)
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/loop_size.pdf"),height=5,width=5)
+print(p)
+dev.off()
+
+Supp_5D = p
+
+```
+
+```{r}
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/4_loop")
+
+library(GenomicRanges)
+library(ComplexUpset)
+library(data.table)
+library(igraph)
+
+# -----------------------------
+# input files
+# -----------------------------
+files <- c(
+"5_aggregate/B36_DMSOvsDP_B36_DMSO_specific_dloops_nochr.bedpe",
+"5_aggregate/B49_DMSOvsDP_B49_DMSO_specific_dloops_nochr.bedpe",
+"5_aggregate/B66_DMSOvsDP_B66_DMSO_specific_dloops_nochr.bedpe",
+"5_aggregate/NHA_DMSOvsDP_NHA_DMSO_specific_dloops_nochr.bedpe",
+"5_aggregate/qNHA_DMSOvsDP_qNHA_DMSO_specific_dloops_nochr.bedpe"
+)
+
+names(files) <- c("B36","B49","B66","NHA","qNHA")
+
+buffer <- 10000
+
+allA <- GRanges()
+allB <- GRanges()
+file_id <- c()
+
+for(i in seq_along(files)){
+
+    x <- fread(files[i])
+
+    grA <- GRanges(
+        seqnames=x[[1]],
+        ranges=IRanges(
+            start=pmax(1,x[[2]]-buffer),
+            end=x[[3]]+buffer
+        )
+    )
+
+    grB <- GRanges(
+        seqnames=x[[4]],
+        ranges=IRanges(
+            start=pmax(1,x[[5]]-buffer),
+            end=x[[6]]+buffer
+        )
+    )
+
+    allA <- c(allA,grA)
+    allB <- c(allB,grB)
+
+    file_id <- c(file_id,rep(names(files)[i],nrow(x)))
+}
+
+n_loops <- length(allA)
+
+# find anchor overlaps
+oa <- findOverlaps(allA,allA)
+ob <- findOverlaps(allB,allB)
+
+# create overlap keys
+keyA <- paste(queryHits(oa),subjectHits(oa))
+keyB <- paste(queryHits(ob),subjectHits(ob))
+
+shared <- intersect(keyA,keyB)
+
+edges <- do.call(rbind,strsplit(shared," "))
+edges <- matrix(as.numeric(edges),ncol=2)
+
+# remove self edges
+edges <- edges[edges[,1]!=edges[,2],]
+
+# build graph
+g <- make_empty_graph(n_loops)
+
+if(nrow(edges)>0){
+    g <- add_edges(g,t(edges))
+}
+
+clusters <- components(g)$membership
+
+# build upset matrix
+cluster_ids <- unique(clusters)
+
+membership <- matrix(FALSE,
+                     nrow=length(cluster_ids),
+                     ncol=length(files))
+
+colnames(membership) <- names(files)
+
+for(i in seq_along(cluster_ids)){
+
+    members <- which(clusters==cluster_ids[i])
+    membership[i,unique(file_id[members])] <- TRUE
+
+}
+
+upset_df <- as.data.frame(membership)
+
+
+set_cols <- colnames(upset_df)
+plot_df <- as.data.frame(upset_df[, set_cols])
+plot_df[] <- lapply(plot_df, as.integer)
+
+# -----------------------------
+# UpSet plot
+# -----------------------------
+p = UpSetR::upset(
+  plot_df,
+  sets = colnames(plot_df),
+  nsets = length(colnames(plot_df)),
+  nintersects = 20, order.by = "freq", text.scale = 3
+)
+
+loop_table <- data.frame(
+    chr1 = character(),
+    start1 = numeric(),
+    end1 = numeric(),
+    chr2 = character(),
+    start2 = numeric(),
+    end2 = numeric(),
+    file = character()
+)
+
+for(i in seq_along(files)){
+
+    x <- fread(files[i])
+
+    tmp <- data.frame(
+        chr1=x[[1]],
+        start1=x[[2]],
+        end1=x[[3]],
+        chr2=x[[4]],
+        start2=x[[5]],
+        end2=x[[6]],
+        file=names(files)[i]
+    )
+
+    loop_table <- rbind(loop_table,tmp)
+}
+
+loop_table$cluster <- clusters
+canonical_loops <- loop_table[!duplicated(clusters),]
+
+target_clusters <- which(
+(membership[, "B36"] &
+membership[, "B49"] &
+membership[, "B66"] &
+!membership[, "NHA"] &
+!membership[, "qNHA"]) | 
+  (membership[, "B36"] &
+membership[, "B49"] &
+!membership[, "B66"] &
+!membership[, "NHA"] &
+!membership[, "qNHA"]) | 
+  (membership[, "B36"] &
+!membership[, "B49"] &
+membership[, "B66"] &
+!membership[, "NHA"] &
+!membership[, "qNHA"]) |
+  (!membership[, "B36"] &
+membership[, "B49"] &
+membership[, "B66"] &
+!membership[, "NHA"] &
+!membership[, "qNHA"])
+)
+
+cluster_members <- which(clusters %in% target_clusters)
+
+loops_of_interest <- loop_table[cluster_members,]
+loops_of_interest <- canonical_loops[canonical_loops$cluster %in% target_clusters,]
+
+#write.table(
+#loops_of_interest[,1:6],
+#"6_shared_diff/GSC_shared_loops_DMSO_specific.bedpe",
+#sep="\t",
+#quote=FALSE,
+#row.names=FALSE,
+#col.names=FALSE
+#)
+
+tmp <- tempfile(fileext = ".png")
+png(tmp, width = 18, height = 7, units = "in", res = 300)
+print(p)
+dev.off()
+
+p_img <- png::readPNG(tmp)
+
+p_gg <- ggplot() +
+  annotation_raster(p_img, xmin = 0, xmax = 1, ymin = 0, ymax = 1) +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), clip = "on") +
+  scale_x_continuous(breaks = NULL, expand = c(0, 0)) +
+  scale_y_continuous(breaks = NULL, expand = c(0, 0)) +
+  theme_void() +
+  theme(
+    plot.margin    = margin(0, 0, 0, 0),
+    axis.text      = element_blank(),
+    axis.ticks     = element_blank(),
+    axis.title     = element_blank(),
+    panel.border   = element_blank(),
+    panel.background = element_blank()
+  )
+
+Supp_5A = p_gg
+
+```
+
+```{r}
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/4_loop")
+
+library(GenomicRanges)
+library(ComplexUpset)
+library(data.table)
+library(igraph)
+
+# -----------------------------
+# input files
+# -----------------------------
+files <- c(
+"5_aggregate/B36_DMSOvsDP_B36_DP_specific_dloops_nochr.bedpe",
+"5_aggregate/B49_DMSOvsDP_B49_DP_specific_dloops_nochr.bedpe",
+"5_aggregate/B66_DMSOvsDP_B66_DP_specific_dloops_nochr.bedpe",
+"5_aggregate/NHA_DMSOvsDP_NHA_DP_specific_dloops_nochr.bedpe",
+"5_aggregate/qNHA_DMSOvsDP_qNHA_DP_specific_dloops_nochr.bedpe"
+)
+
+names(files) <- c("B36","B49","B66","NHA","qNHA")
+
+buffer <- 10000
+
+allA <- GRanges()
+allB <- GRanges()
+file_id <- c()
+
+for(i in seq_along(files)){
+
+    x <- fread(files[i])
+
+    grA <- GRanges(
+        seqnames=x[[1]],
+        ranges=IRanges(
+            start=pmax(1,x[[2]]-buffer),
+            end=x[[3]]+buffer
+        )
+    )
+
+    grB <- GRanges(
+        seqnames=x[[4]],
+        ranges=IRanges(
+            start=pmax(1,x[[5]]-buffer),
+            end=x[[6]]+buffer
+        )
+    )
+
+    allA <- c(allA,grA)
+    allB <- c(allB,grB)
+
+    file_id <- c(file_id,rep(names(files)[i],nrow(x)))
+}
+
+n_loops <- length(allA)
+
+# find anchor overlaps
+oa <- findOverlaps(allA,allA)
+ob <- findOverlaps(allB,allB)
+
+# create overlap keys
+keyA <- paste(queryHits(oa),subjectHits(oa))
+keyB <- paste(queryHits(ob),subjectHits(ob))
+
+shared <- intersect(keyA,keyB)
+
+edges <- do.call(rbind,strsplit(shared," "))
+edges <- matrix(as.numeric(edges),ncol=2)
+
+# remove self edges
+edges <- edges[edges[,1]!=edges[,2],]
+
+# build graph
+g <- make_empty_graph(n_loops)
+
+if(nrow(edges)>0){
+    g <- add_edges(g,t(edges))
+}
+
+clusters <- components(g)$membership
+
+# build upset matrix
+cluster_ids <- unique(clusters)
+
+membership <- matrix(FALSE,
+                     nrow=length(cluster_ids),
+                     ncol=length(files))
+
+colnames(membership) <- names(files)
+
+for(i in seq_along(cluster_ids)){
+
+    members <- which(clusters==cluster_ids[i])
+    membership[i,unique(file_id[members])] <- TRUE
+
+}
+
+upset_df1 <- as.data.frame(membership)
+
+
+set_cols <- colnames(upset_df1)
+plot_df1 <- as.data.frame(upset_df1[, set_cols])
+plot_df1[] <- lapply(plot_df1, as.integer)
+
+# -----------------------------
+# UpSet plot
+# -----------------------------
+p = UpSetR::upset(
+  plot_df1,
+  sets = colnames(plot_df1),
+  nsets = length(colnames(plot_df1)),
+  nintersects = 20, order.by = "freq", text.scale = 3
+)
+
+loop_table <- data.frame(
+    chr1 = character(),
+    start1 = numeric(),
+    end1 = numeric(),
+    chr2 = character(),
+    start2 = numeric(),
+    end2 = numeric(),
+    file = character()
+)
+
+for(i in seq_along(files)){
+
+    x <- fread(files[i])
+
+    tmp <- data.frame(
+        chr1=x[[1]],
+        start1=x[[2]],
+        end1=x[[3]],
+        chr2=x[[4]],
+        start2=x[[5]],
+        end2=x[[6]],
+        file=names(files)[i]
+    )
+
+    loop_table <- rbind(loop_table,tmp)
+}
+
+loop_table$cluster <- clusters
+canonical_loops <- loop_table[!duplicated(clusters),]
+
+target_clusters <- which(
+(membership[, "B36"] &
+membership[, "B49"] &
+membership[, "B66"] &
+!membership[, "NHA"] &
+!membership[, "qNHA"]) | 
+  (membership[, "B36"] &
+membership[, "B49"] &
+!membership[, "B66"] &
+!membership[, "NHA"] &
+!membership[, "qNHA"]) | 
+  (membership[, "B36"] &
+!membership[, "B49"] &
+membership[, "B66"] &
+!membership[, "NHA"] &
+!membership[, "qNHA"]) |
+  (!membership[, "B36"] &
+membership[, "B49"] &
+membership[, "B66"] &
+!membership[, "NHA"] &
+!membership[, "qNHA"])
+)
+
+cluster_members <- which(clusters %in% target_clusters)
+
+loops_of_interest <- loop_table[cluster_members,]
+loops_of_interest <- canonical_loops[canonical_loops$cluster %in% target_clusters,]
+
+#write.table(
+#loops_of_interest[,1:6],
+#"6_shared_diff/GSC_shared_loops_DP_specific.bedpe",
+#sep="\t",
+#quote=FALSE,
+#row.names=FALSE,
+#col.names=FALSE
+#)
+
+tmp <- tempfile(fileext = ".png")
+png(tmp, width = 18, height = 7, units = "in", res = 300)
+print(p)
+dev.off()
+
+p_img <- png::readPNG(tmp)
+
+p_gg <- ggplot() +
+  annotation_raster(p_img, xmin = 0, xmax = 1, ymin = 0, ymax = 1) +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), clip = "on") +
+  scale_x_continuous(breaks = NULL, expand = c(0, 0)) +
+  scale_y_continuous(breaks = NULL, expand = c(0, 0)) +
+  theme_void() +
+  theme(
+    plot.margin    = margin(0, 0, 0, 0),
+    axis.text      = element_blank(),
+    axis.ticks     = element_blank(),
+    axis.title     = element_blank(),
+    panel.border   = element_blank(),
+    panel.background = element_blank()
+  )
+
+Supp_5B = p_gg
+
+
+```
+
+```{r}
+
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/4_loop")
+
+library(GenomicRanges)
+library(ComplexUpset)
+library(data.table)
+library(igraph)
+
+# -----------------------------
+# input files
+# -----------------------------
+files <- c(
+"5_aggregate/B36_DMSOvsDP_B36_DMSO_specific_dloops_nochr.bedpe",
+"5_aggregate/B49_DMSOvsDP_B49_DMSO_specific_dloops_nochr.bedpe",
+"5_aggregate/B66_DMSOvsDP_B66_DMSO_specific_dloops_nochr.bedpe",
+"5_aggregate/NHA_DMSOvsDP_NHA_DMSO_specific_dloops_nochr.bedpe",
+"5_aggregate/qNHA_DMSOvsDP_qNHA_DMSO_specific_dloops_nochr.bedpe",
+"5_aggregate/B36_DMSOvsDP_B36_DP_specific_dloops_nochr.bedpe",
+"5_aggregate/B49_DMSOvsDP_B49_DP_specific_dloops_nochr.bedpe",
+"5_aggregate/B66_DMSOvsDP_B66_DP_specific_dloops_nochr.bedpe",
+"5_aggregate/NHA_DMSOvsDP_NHA_DP_specific_dloops_nochr.bedpe",
+"5_aggregate/qNHA_DMSOvsDP_qNHA_DP_specific_dloops_nochr.bedpe"
+)
+
+names(files) <- c("B36_DMSO","B49_DMSO","B66_DMSO","NHA_DMSO","qNHA_DMSO","B36_DP","B49_DP","B66_DP","NHA_DP","qNHA_DP")
+
+buffer <- 10000
+
+allA <- GRanges()
+allB <- GRanges()
+file_id <- c()
+
+for(i in seq_along(files)){
+
+    x <- fread(files[i])
+
+    grA <- GRanges(
+        seqnames=x[[1]],
+        ranges=IRanges(
+            start=pmax(1,x[[2]]-buffer),
+            end=x[[3]]+buffer
+        )
+    )
+
+    grB <- GRanges(
+        seqnames=x[[4]],
+        ranges=IRanges(
+            start=pmax(1,x[[5]]-buffer),
+            end=x[[6]]+buffer
+        )
+    )
+
+    allA <- c(allA,grA)
+    allB <- c(allB,grB)
+
+    file_id <- c(file_id,rep(names(files)[i],nrow(x)))
+}
+
+n_loops <- length(allA)
+
+# find anchor overlaps
+oa <- findOverlaps(allA,allA)
+ob <- findOverlaps(allB,allB)
+
+# create overlap keys
+keyA <- paste(queryHits(oa),subjectHits(oa))
+keyB <- paste(queryHits(ob),subjectHits(ob))
+
+shared <- intersect(keyA,keyB)
+
+edges <- do.call(rbind,strsplit(shared," "))
+edges <- matrix(as.numeric(edges),ncol=2)
+
+# remove self edges
+edges <- edges[edges[,1]!=edges[,2],]
+
+# build graph
+g <- make_empty_graph(n_loops)
+
+if(nrow(edges)>0){
+    g <- add_edges(g,t(edges))
+}
+
+clusters <- components(g)$membership
+
+# build upset matrix
+cluster_ids <- unique(clusters)
+
+membership <- matrix(FALSE,
+                     nrow=length(cluster_ids),
+                     ncol=length(files))
+
+colnames(membership) <- names(files)
+
+for(i in seq_along(cluster_ids)){
+
+    members <- which(clusters==cluster_ids[i])
+    membership[i,unique(file_id[members])] <- TRUE
+
+}
+
+loop_table <- data.frame(
+    chr1 = character(),
+    start1 = numeric(),
+    end1 = numeric(),
+    chr2 = character(),
+    start2 = numeric(),
+    end2 = numeric(),
+    file = character()
+)
+
+for(i in seq_along(files)){
+
+    x <- fread(files[i])
+
+    tmp <- data.frame(
+        chr1=x[[1]],
+        start1=x[[2]],
+        end1=x[[3]],
+        chr2=x[[4]],
+        start2=x[[5]],
+        end2=x[[6]],
+        file=names(files)[i]
+    )
+
+    loop_table <- rbind(loop_table,tmp)
+}
+
+loop_table$cluster <- clusters
+canonical_loops <- loop_table[!duplicated(clusters),]
+
+#write.table(
+#canonical_loops[,1:6],
+#"7_merged_loop/GSC_shared_differential_loops.bedpe",
+#sep="\t",
+#quote=FALSE,
+#row.names=FALSE,
+#col.names=FALSE
+#)
+
+```
+
+```{r}
+###DEG/CTCF/Loop overlap
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/4_loop/7_merged_loop")
+
+############################
+# 1) Read loop files
+############################
+loop_files <- list.files(".", pattern = "quant_loops.bedpe")
+loop_df_list <- lapply(loop_files, function(f){
+  df <- read.delim(f, header=TRUE)
+  out <- df %>%
+    dplyr::select(chr1 = 1, start1 = 2, end1 = 3, chr2 = 4, start2 = 5, end2 = 6, loopId = 7, enrichmentScore = 8)
+  colname <- gsub("_diffloops_quant_loops.bedpe", "", basename(f))
+  colnames(out)[8] <- colname
+  return(out)
+})
+loops_merged <- Reduce(function(x,y) left_join(x,y, by = c("loopId","chr1","start1","end1","chr2","start2","end2")), loop_df_list)
+rownames(loops_merged) <- loops_merged$loopId
+loops_merged <- loops_merged %>% dplyr::select(-loopId)
+
+############################
+# 2) Peak counts processing
+############################
+peak_file <- "../../cutrun/1_diffbind/GSC_joint_counts_DEG.bed"
+peak_raw <- read.delim(peak_file, header=FALSE)
+peak_processed <- data.frame(
+  chr = peak_raw[,1],
+  start = peak_raw[,2],
+  stop = peak_raw[,3],
+  B36_DMSO = rowMeans(peak_raw[,c(4,5)]),
+  B36_DP   = rowMeans(peak_raw[,c(6,7)]),
+  B49_DMSO = rowMeans(peak_raw[,c(8,9)]),
+  B49_DP   = rowMeans(peak_raw[,c(10,11)]),
+  B66_DMSO = rowMeans(peak_raw[,c(12,13)]),
+  B66_DP   = rowMeans(peak_raw[,c(14,15)]),
+  log2FoldChange = peak_raw[,17],
+  padj = peak_raw[,21]
+)
+peak_processed <- peak_processed[abs(peak_processed$log2FoldChange) > 0.5 & peak_processed$padj < 0.05,]
+
+############################
+# 3) RNA counts matrices
+############################
+rna_files <- list.files("../../rnaseq/1_DESeq2/", pattern = "normcounts_matrix.tsv", full.names = TRUE)
+rna_list <- lapply(rna_files, function(f){
+  df <- read.delim(f, header=TRUE, row.names=1)
+  avg_df <- data.frame(
+    rows = rownames(df),
+    col1 = rowMeans(df[,1:2]),
+    col2 = rowMeans(df[,3:4])
+  )
+  colnames(avg_df) <- c("rows",gsub("_BRep1","", colnames(df)[1]), gsub("_BRep1","", colnames(df)[3]))
+  return(avg_df)
+})
+rna_counts_merged <- Reduce(function(x,y){
+  merge(x,y, by="rows", all=TRUE)
+}, rna_list)
+rownames(rna_counts_merged) <- rna_counts_merged$rows
+rna_counts_merged <- drop_na(rna_counts_merged)
+rna_counts_merged <- rna_counts_merged %>% dplyr::select(-rows)
+
+############################
+# 4) RNA DEG files
+############################
+deg_files <- list.files("../../rnaseq/1_DESeq2/", pattern = "_shrinkage_DEGs.bed", full.names = TRUE)
+deg_list <- lapply(deg_files, function(f){
+  df <- read.delim(f, header=TRUE)
+  sample_name <- gsub("_DPvsDMSO_shrinkage_DEGs.bed", "", basename(f))
+  out <- data.frame(
+    chr = df[,1],
+    start = df[,2],
+    stop = df[,3],
+    geneID = df[,5],
+    DEG = abs(df[,7]) > 1 & df[,10] < 0.05
+  )
+  colnames(out)[5] <- sample_name
+  return(out)
+})
+deg_merged <- Reduce(function(x,y) full_join(x,y, by=c("chr","start","stop","geneID")), deg_list)
+rownames(deg_merged) <- deg_merged$geneID
+deg_merged <- drop_na(deg_merged)
+deg_merged <- deg_merged[, !(colnames(deg_merged) %in% "geneID")]
+deg_merged = deg_merged[rowSums(deg_merged[, 4:6]) >= 1, ]
+rna_counts_merged = rna_counts_merged[rownames(rna_counts_merged) %in% rownames(deg_merged),]
+# convert rownames to column for merging
+rna_tmp <- rna_counts_merged %>%
+  tibble::rownames_to_column("geneID")
+deg_tmp <- deg_merged %>%
+  tibble::rownames_to_column("geneID") %>%
+  dplyr::select(geneID, chr, start, stop)
+# merge coordinates into RNA counts
+rna_counts_merged <- left_join(deg_tmp, rna_tmp, by = "geneID")
+# restore geneID as rownames
+rownames(rna_counts_merged) <- rna_counts_merged$geneID
+rna_counts_merged <- rna_counts_merged %>% dplyr::select(-geneID)
+
+############################
+# 5) granges
+############################
+# loops granges
+# anchors
+anchor1 <- GRanges(
+  seqnames = loops_merged$chr1,
+  ranges = IRanges(loops_merged$start1, loops_merged$end1)
+)
+anchor2 <- GRanges(
+  seqnames = loops_merged$chr2,
+  ranges = IRanges(loops_merged$start2, loops_merged$end2)
+)
+# interaction object
+loops_gr <- GInteractions(anchor1, anchor2)
+# add enrichment scores as metadata
+mcols(loops_gr) <- loops_merged[, -(1:6)]
+names(loops_gr) <- rownames(loops_merged)
+
+# peaks granges
+peaks_gr <- GRanges(
+  seqnames = peak_processed$chr,
+  ranges = IRanges(peak_processed$start, peak_processed$stop)
+)
+mcols(peaks_gr) <- peak_processed[, -(1:3)]
+
+# rna granges
+rna_gr <- GRanges(
+  seqnames = rna_counts_merged$chr,
+  ranges = IRanges(rna_counts_merged$start, rna_counts_merged$stop)
+)
+mcols(rna_gr) <- rna_counts_merged[, -(1:3)]
+names(rna_gr) <- rownames(rna_counts_merged)
+
+############################
+# 6) overlap table
+############################
+anchors_list <- anchors(loops_gr)
+anchor1 <- anchors_list[[1]]
+anchor2 <- anchors_list[[2]]
+# overlap with peaks
+ov_peaks_a1 <- findOverlaps(anchor1, peaks_gr)
+ov_peaks_a2 <- findOverlaps(anchor2, peaks_gr)
+loop_peak_hits <- rbind(
+  DataFrame(loop=queryHits(ov_peaks_a1), peak=subjectHits(ov_peaks_a1)),
+  DataFrame(loop=queryHits(ov_peaks_a2), peak=subjectHits(ov_peaks_a2))
+)
+peak_mat <- as.data.frame(mcols(peaks_gr))
+peak_sum <- lapply(split(loop_peak_hits$peak, loop_peak_hits$loop), function(idx){
+  colSums(peak_mat[idx, , drop=FALSE], na.rm=TRUE)
+})
+peak_sum <- do.call(rbind, peak_sum)
+peak_sum <- as.data.frame(peak_sum)
+peak_sum$loop_index <- as.integer(rownames(peak_sum))
+peak_idx <- unique(c(
+  subjectHits(ov_peaks_a1),
+  subjectHits(ov_peaks_a2)
+))
+peaks_overlap <- peaks_gr[peak_idx]
+peaks_bed <- data.frame(
+  chr = as.character(seqnames(peaks_overlap)),
+  start = start(peaks_overlap),
+  end = end(peaks_overlap)
+)
+write.table(
+  peaks_bed,
+  "loop_anchor_overlapping_peaks.bed",
+  sep="\t",
+  quote=FALSE,
+  row.names=FALSE,
+  col.names=FALSE
+)
+# overlap with genes
+ov_gene_a1 <- findOverlaps(anchor1, rna_gr)
+ov_gene_a2 <- findOverlaps(anchor2, rna_gr)
+loop_gene_hits <- rbind(
+  DataFrame(loop=queryHits(ov_gene_a1), gene=names(rna_gr)[subjectHits(ov_gene_a1)]),
+  DataFrame(loop=queryHits(ov_gene_a2), gene=names(rna_gr)[subjectHits(ov_gene_a2)])
+)
+loop_gene_hits_df <- as.data.frame(loop_gene_hits)
+rna_mat <- as.data.frame(mcols(rna_gr))
+gene_sum <- lapply(split(loop_gene_hits$gene, loop_gene_hits$loop), function(idx){
+  colSums(rna_mat[idx, , drop=FALSE], na.rm=TRUE)
+})
+gene_sum <- do.call(rbind, gene_sum)
+gene_sum <- as.data.frame(gene_sum)
+gene_sum$loop_index <- as.integer(rownames(gene_sum))
+# final table
+loop_coords <- loops_merged[,1:6]
+loop_scores <- loops_merged[,7:ncol(loops_merged)]
+loop_table <- cbind(
+  loop_coords,
+  loop_scores
+)
+loop_table$loop_index <- seq_len(nrow(loop_table))
+loop_table <- merge(loop_table, peak_sum, by="loop_index", all.x=TRUE)
+loop_table <- merge(loop_table, gene_sum, by="loop_index", all.x=TRUE)
+rownames(loop_table) <- loops_merged$loopId
+loop_table$loop_index <- NULL
+loop_table = drop_na(loop_table)
+
+############################
+# 7) heatmap
+############################
+loop_mat = loop_table[,7:12] %>% as.matrix()
+colnames(loop_mat) = c("B36_DMSO","B36_DP","B49_DMSO","B49_DP","B66_DMSO","B66_DP")#,"NHA_DMSO","NHA_DP","qNHA_DMSO","qNHA_DP")
+
+ctcf_mat = loop_table[,17:22] %>% as.matrix()
+colnames(ctcf_mat) = c("B36_DMSO","B36_DP","B49_DMSO","B49_DP","B66_DMSO","B66_DP")
+
+rna_mat = loop_table[,25:30] %>% as.matrix()
+colnames(rna_mat) = c("B36_DMSO","B36_DP","B49_DMSO","B49_DP","B66_DMSO","B66_DP")#,"NHA_DMSO","NHA_DP","qNHA_DMSO","qNHA_DP")
+
+scaled_loop = t(scale(t(as.matrix(loop_mat))))
+colnames(scaled_loop) = c("B36_DMSO","B36_DP","B49_DMSO","B49_DP","B66_DMSO","B66_DP")#,"NHA_DMSO","NHA_DP","qNHA_DMSO","qNHA_DP")
+scaled_ctcf = t(scale(t(as.matrix(ctcf_mat))))
+colnames(scaled_ctcf) = c("B36_DMSO","B36_DP","B49_DMSO","B49_DP","B66_DMSO","B66_DP")
+scaled_rna = t(scale(t(as.matrix(rna_mat))))
+colnames(scaled_rna) = c("B36_DMSO","B36_DP","B49_DMSO","B49_DP","B66_DMSO","B66_DP")#,"NHA_DMSO","NHA_DP","qNHA_DMSO","qNHA_DP")
+
+col_fun = circlize::colorRamp2(c(-3, 0, 3), c("lightblue", "white", "red"))
+heatmap_loop = ComplexHeatmap::Heatmap(as.matrix(scaled_loop),
+                                      col = col_fun,
+                                      show_row_names = FALSE, 
+                                      show_column_names = TRUE, 
+                                      name="Loop ES\nZ-score",
+                                      cluster_rows = TRUE,
+                                      cluster_columns = FALSE,
+                                      row_gap = unit(2, "mm"),
+                                      row_title = NULL,
+                                      row_split = 2,
+                                      use_raster = FALSE,
+                                      border = TRUE,
+                                      column_names_gp = grid::gpar(fontsize = 14),
+                                      heatmap_legend_param = list(
+                                      title_gp = gpar(fontsize = 14),
+                                      labels_gp = gpar(fontsize = 14)))
+#print(heatmap_TAD)
+
+
+col_fun = circlize::colorRamp2(c(-3, 0, 3), c("skyblue", "white", "darkorange3"))
+heatmap_ctcf = ComplexHeatmap::Heatmap(as.matrix(scaled_ctcf),
+                                       col = col_fun,
+                                       show_row_names = FALSE, 
+                                       show_column_names = TRUE, 
+                                       name="CTCF Signal\nZ-score",
+                                       cluster_rows = TRUE,
+                                       cluster_columns = FALSE,
+                                       row_gap = unit(2, "mm"),
+                                       row_title = NULL,
+                                       use_raster = FALSE,
+                                       border = TRUE,
+                                       column_names_gp = grid::gpar(fontsize = 14),
+                                       heatmap_legend_param = list(
+                                       title_gp = gpar(fontsize = 14),
+                                       labels_gp = gpar(fontsize = 14)))
+
+print(heatmap_loop+heatmap_ctcf)
+#print(heatmap_ctcf)
+
+pdf("loop_ctcf_rna.ES_ctcf_rna_mega_zscore.pdf",height=5,width=8)
+print(heatmap_loop+heatmap_ctcf)
+dev.off()
+
+
+tmp <- tempfile(fileext = ".png")
+png(tmp, width = 6, height = 8, units = "in", res = 600)
+print(heatmap_loop+heatmap_ctcf)
+dev.off()
+
+p_img <- png::readPNG(tmp)
+
+p_gg <- ggplot() +
+  annotation_raster(p_img, xmin = 0, xmax = 1, ymin = 0, ymax = 1) +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), clip = "on") +
+  scale_x_continuous(breaks = NULL, expand = c(0, 0)) +
+  scale_y_continuous(breaks = NULL, expand = c(0, 0)) +
+  theme_void() +
+  theme(
+    plot.margin    = margin(0, 0, 0, 0),
+    axis.text      = element_blank(),
+    axis.ticks     = element_blank(),
+    axis.title     = element_blank(),
+    panel.border   = element_blank(),
+    panel.background = element_blank()
+  )
+
+Fig_4D = p_gg
+
+```
+```{r}
+###All gene/CTCF/Loop overlap for GSEA
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/4_loop/7_merged_loop")
+
+############################
+# 1) Read loop files
+############################
+loop_files <- list.files(".", pattern = "quant_loops.bedpe")
+loop_df_list <- lapply(loop_files, function(f){
+  df <- read.delim(f, header=TRUE)
+  out <- df %>%
+    dplyr::select(chr1 = 1, start1 = 2, end1 = 3, chr2 = 4, start2 = 5, end2 = 6, loopId = 7, enrichmentScore = 8)
+  colname <- gsub("_diffloops_quant_loops.bedpe", "", basename(f))
+  colnames(out)[8] <- colname
+  return(out)
+})
+loops_merged <- Reduce(function(x,y) left_join(x,y, by = c("loopId","chr1","start1","end1","chr2","start2","end2")), loop_df_list)
+rownames(loops_merged) <- loops_merged$loopId
+loops_merged <- loops_merged %>% dplyr::select(-loopId)
+
+############################
+# 2) Peak counts processing
+############################
+peak_file <- "../../cutrun/1_diffbind/GSC_joint_counts_DEG.bed"
+peak_raw <- read.delim(peak_file, header=FALSE)
+peak_processed <- data.frame(
+  chr = peak_raw[,1],
+  start = peak_raw[,2],
+  stop = peak_raw[,3],
+  B36_DMSO = rowMeans(peak_raw[,c(4,5)]),
+  B36_DP   = rowMeans(peak_raw[,c(6,7)]),
+  B49_DMSO = rowMeans(peak_raw[,c(8,9)]),
+  B49_DP   = rowMeans(peak_raw[,c(10,11)]),
+  B66_DMSO = rowMeans(peak_raw[,c(12,13)]),
+  B66_DP   = rowMeans(peak_raw[,c(14,15)]),
+  log2FoldChange = peak_raw[,17],
+  padj = peak_raw[,21]
+)
+peak_processed <- peak_processed[abs(peak_processed$log2FoldChange) > 0.5 & peak_processed$padj < 0.05,]
+
+############################
+# 3) RNA counts matrices
+############################
+rna_files <- list.files("../../rnaseq/1_DESeq2/", pattern = "normcounts_matrix.tsv", full.names = TRUE)
+rna_list <- lapply(rna_files, function(f){
+  df <- read.delim(f, header=TRUE, row.names=1)
+  avg_df <- data.frame(
+    rows = rownames(df),
+    col1 = rowMeans(df[,1:2]),
+    col2 = rowMeans(df[,3:4])
+  )
+  colnames(avg_df) <- c("rows",gsub("_BRep1","", colnames(df)[1]), gsub("_BRep1","", colnames(df)[3]))
+  return(avg_df)
+})
+rna_counts_merged <- Reduce(function(x,y){
+  merge(x,y, by="rows", all=TRUE)
+}, rna_list)
+rownames(rna_counts_merged) <- rna_counts_merged$rows
+#rna_counts_merged <- drop_na(rna_counts_merged) ###leave NAs for cell line specific expressed genes
+rna_counts_merged <- rna_counts_merged %>% dplyr::select(-rows)
+
+############################
+# 4) RNA DEG files
+############################
+deg_files <- list.files("../../rnaseq/1_DESeq2/", pattern = "_shrinkage_DEGs.bed", full.names = TRUE)
+deg_list <- lapply(deg_files, function(f){
+  df <- read.delim(f, header=TRUE)
+  sample_name <- gsub("_DPvsDMSO_shrinkage_DEGs.bed", "", basename(f))
+  out <- data.frame(
+    chr = df[,1],
+    start = df[,2],
+    stop = df[,3],
+    geneID = df[,5],
+    DEG = abs(df[,7]) > 1 & df[,10] < 0.05
+  )
+  colnames(out)[5] <- sample_name
+  return(out)
+})
+deg_merged <- Reduce(function(x,y) full_join(x,y, by=c("chr","start","stop","geneID")), deg_list)
+rownames(deg_merged) <- deg_merged$geneID
+deg_merged <- drop_na(deg_merged)
+deg_merged <- deg_merged[, !(colnames(deg_merged) %in% "geneID")]
+#deg_merged = deg_merged[rowSums(deg_merged[, 4:6]) >= 1, ]  ###Just to get coordinate information but don't filter for DEGs
+rna_counts_merged = rna_counts_merged[rownames(rna_counts_merged) %in% rownames(deg_merged),]
+# convert rownames to column for merging
+rna_tmp <- rna_counts_merged %>%
+  tibble::rownames_to_column("geneID")
+deg_tmp <- deg_merged %>%
+  tibble::rownames_to_column("geneID") %>%
+  dplyr::select(geneID, chr, start, stop)
+# merge coordinates into RNA counts
+rna_counts_merged <- left_join(deg_tmp, rna_tmp, by = "geneID")
+# restore geneID as rownames
+rownames(rna_counts_merged) <- rna_counts_merged$geneID
+rna_counts_merged <- rna_counts_merged %>% dplyr::select(-geneID)
+
+############################
+# 5) granges
+############################
+# loops granges
+# anchors
+anchor1 <- GRanges(
+  seqnames = loops_merged$chr1,
+  ranges = IRanges(loops_merged$start1, loops_merged$end1)
+)
+anchor2 <- GRanges(
+  seqnames = loops_merged$chr2,
+  ranges = IRanges(loops_merged$start2, loops_merged$end2)
+)
+# interaction object
+loops_gr <- GInteractions(anchor1, anchor2)
+# add enrichment scores as metadata
+mcols(loops_gr) <- loops_merged[, -(1:6)]
+names(loops_gr) <- rownames(loops_merged)
+
+# peaks granges
+peaks_gr <- GRanges(
+  seqnames = peak_processed$chr,
+  ranges = IRanges(peak_processed$start, peak_processed$stop)
+)
+mcols(peaks_gr) <- peak_processed[, -(1:3)]
+
+# rna granges
+rna_gr <- GRanges(
+  seqnames = rna_counts_merged$chr,
+  ranges = IRanges(rna_counts_merged$start, rna_counts_merged$stop)
+)
+mcols(rna_gr) <- rna_counts_merged[, -(1:3)]
+names(rna_gr) <- rownames(rna_counts_merged)
+
+############################
+# 6) overlap table
+############################
+anchors_list <- anchors(loops_gr)
+anchor1 <- anchors_list[[1]]
+anchor2 <- anchors_list[[2]]
+# overlap with peaks
+ov_peaks_a1 <- findOverlaps(anchor1, peaks_gr)
+ov_peaks_a2 <- findOverlaps(anchor2, peaks_gr)
+loop_peak_hits <- rbind(
+  DataFrame(loop=queryHits(ov_peaks_a1), peak=subjectHits(ov_peaks_a1)),
+  DataFrame(loop=queryHits(ov_peaks_a2), peak=subjectHits(ov_peaks_a2))
+)
+peak_mat <- as.data.frame(mcols(peaks_gr))
+peak_sum <- lapply(split(loop_peak_hits$peak, loop_peak_hits$loop), function(idx){
+  colSums(peak_mat[idx, , drop=FALSE], na.rm=TRUE)
+})
+peak_sum <- do.call(rbind, peak_sum)
+peak_sum <- as.data.frame(peak_sum)
+peak_sum$loop_index <- as.integer(rownames(peak_sum))
+peak_idx <- unique(c(
+  subjectHits(ov_peaks_a1),
+  subjectHits(ov_peaks_a2)
+))
+peaks_overlap <- peaks_gr[peak_idx]
+peaks_bed <- data.frame(
+  chr = as.character(seqnames(peaks_overlap)),
+  start = start(peaks_overlap),
+  end = end(peaks_overlap)
+)
+
+# overlap with genes
+ov_gene_a1 <- findOverlaps(anchor1, rna_gr)
+ov_gene_a2 <- findOverlaps(anchor2, rna_gr)
+loop_gene_hits <- rbind(
+  DataFrame(loop=queryHits(ov_gene_a1), gene=names(rna_gr)[subjectHits(ov_gene_a1)]),
+  DataFrame(loop=queryHits(ov_gene_a2), gene=names(rna_gr)[subjectHits(ov_gene_a2)])
+)
+loop_gene_hits_df <- as.data.frame(loop_gene_hits)
+
+
+```
+
+```{r}
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/4_loop/7_merged_loop")
+
+B36_genes = read.delim("../../rnaseq/1_DESeq2//B36_DPvsDMSO_shrinkage_DEGs.bed", header=TRUE)
+B49_genes = read.delim("../../rnaseq/1_DESeq2//B49_DPvsDMSO_shrinkage_DEGs.bed", header=TRUE)
+B66_genes = read.delim("../../rnaseq/1_DESeq2//B66_DPvsDMSO_shrinkage_DEGs.bed", header=TRUE)
+
+B36_loop_genes = B36_genes[B36_genes$geneID %in% unique(loop_gene_hits_df[, "gene"]),]
+B49_loop_genes = B49_genes[B49_genes$geneID %in% unique(loop_gene_hits_df[, "gene"]),]
+B66_loop_genes = B66_genes[B66_genes$geneID %in% unique(loop_gene_hits_df[, "gene"]),]
+
+#B36_loop_DEG = B36_loop_genes[abs(B36_loop_genes$log2FoldChange) >=1 & B36_loop_genes$padj < 0.05,]
+#B49_loop_DEG = B49_loop_genes[abs(B49_loop_genes$log2FoldChange) >=1 & B49_loop_genes$padj < 0.05,]
+#B66_loop_DEG = B66_loop_genes[abs(B66_loop_genes$log2FoldChange) >=1 & B66_loop_genes$padj < 0.05,]
+#
+#for (i in c(B36_loop_DEG,B49_loop_DEG,B66_loop_DEG)) {
+#  yy <- enrichGO(i$geneID, 'org.Hs.eg.db', keyType = "SYMBOL", ont="ALL", pvalueCutoff=0.05, pAdjustMethod = "BH")
+#  p = dotplot(yy, showCategory=15, font.size = 6)
+#  
+#  pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/",deparse(substitute(i)),"loop_switch_go.pdf"))
+#  print(p)
+#  dev.off()
+#}
+
+# we want the log2 fold change 
+B36_orig_gene_list <- B36_loop_genes$log2FoldChange
+B49_orig_gene_list <- B49_loop_genes$log2FoldChange
+B66_orig_gene_list <- B66_loop_genes$log2FoldChange
+# name the vector
+names(B36_orig_gene_list) <- B36_loop_genes$geneID
+names(B49_orig_gene_list) <- B49_loop_genes$geneID
+names(B66_orig_gene_list) <- B66_loop_genes$geneID
+# omit any NA values 
+B36_gene_list<-na.omit(B36_orig_gene_list)
+B49_gene_list<-na.omit(B49_orig_gene_list)
+B66_gene_list<-na.omit(B66_orig_gene_list)
+# sort the list in decreasing order (required for clusterProfiler)
+B36_gene_list = sort(B36_gene_list, decreasing = TRUE)
+B49_gene_list = sort(B49_gene_list, decreasing = TRUE)
+B66_gene_list = sort(B66_gene_list, decreasing = TRUE)
+
+h_df <- msigdbr(species = "Homo sapiens", category = "H") %>% dplyr::select(gs_name, gene_symbol)
+gsea_B36 <- GSEA(geneList = B36_gene_list, TERM2GENE = h_df)
+gsea_B49 <- GSEA(geneList = B49_gene_list, TERM2GENE = h_df)
+gsea_B66 <- GSEA(geneList = B66_gene_list, TERM2GENE = h_df)
+
+merged_gsea = merge_result(list(B36=gsea_B36,B49=gsea_B49,B66=gsea_B66))
+p = dotplot(merged_gsea, showCategory=15, split=".sign", font.size = 8) + theme(legend.text=element_text(size=5)) + facet_grid(.~.sign)
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/loop_merged_gsea_rna.pdf"))
+print(p)
+dev.off()
+
+Fig_4E = p
+
+```
+
+```{r}
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/4_loop")
+options(scipen = 999)
+
+###Stronger loop examples
+chr = "7"
+start = 25500000
+end = 27500000
+cut_val = 0.85
+cut_val1 = 0.8
+
+tmp <- tempfile(fileext = ".png")
+png(tmp, width = 7, height = 6, units = "in", res = 600)
+pageCreate(width = 7, height = 6, default.units = "inches")
+## Add heatmap annotation
+plotText(label = "DP", fontsize = 10, x = 0.5, y = 1.25, just = c("left", "top"), default.units = "inches")
+plotText(label = "DMSO", fontsize = 10, x = 0.5, y = 2.25, just = c("left", "bottom"), default.units = "inches")
+## Text section label
+plotText(label = "B36", fontsize = 10, x = 1.5, y = 0.90, just = c("center", "center"), default.units = "inches")
+## Set genomic and dimension parameters in a `params` object
+params_c <- pgParams(chrom = chr, chromstart = start, chromend = end, 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 0.75, width = 1.5, default.units = "inches")
+## Get matrix
+dmso_mat = readHic("./matrix_for_plot/B36_DMSO.hic", chrom = chr, chromstart = start, chromend = end, assembly = "hg38",
+                   resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dmso <- plotHicTriangle(data = "./matrix_for_plot/B36_DMSO.hic", params = params_c,
+                            zrange = c(0, quantile(dmso_mat$counts, probs = cut_val)), resolution = 10000, flip = TRUE,
+                            y = 2.5, height = 0.75, just = c("left", "bottom"))
+annoHeatmapLegend(plot = hic_dmso, x = 2.5, y = 1.25,width = 0.13, height = 1.2,just = c("right", "top"), fontcolor = "black")
+## Set genomic and dimension parameters in a `params` object
+params_d <- pgParams(chrom = chr, chromstart = start, chromend = end, 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 2.25, width = 1.5, default.units = "inches")
+## Get matrix
+dp_mat = readHic("./matrix_for_plot/B36_DP.hic", chrom = chr, chromstart = start, chromend = end, assembly = "hg38",
+                 resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dp <- plotHicTriangle(data = "./matrix_for_plot/B36_DP.hic", params = params_d,
+                          zrange = c(0, quantile(dmso_mat$counts, probs = cut_val)), resolution = 10000,
+                          y = 1.75, height = 0.75, just = c("right", "bottom"))
+## Add line
+#plotSegments(x0 = 1.5, y0 = 1, x1 = 1.5, y1 = 4, default.units = "inches", lty = 2, lwd = 1.5, col = "black")
+## Add CTCF bigwig
+dmso_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B36_DMSO_CTCF.bw",
+                       binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr), chromstart = start, chromend = end, 
+                       assembly = "hg38", linecolor = "red", fill = NA, ymax = 1, range = c(0,200), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                       baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 0.75, y = 2.5, width = 1.5, height = 0.5, 
+                       just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+
+dp_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B36_DP_CTCF.bw",
+                     binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr), chromstart = start, chromend = end, 
+                     assembly = "hg38", linecolor = "#37a7db", fill = NA, ymax = 1, range = c(0,200), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                     baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 0.75, y = 3, width = 1.5, height = 0.5, 
+                     just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+
+annoYaxis(plot = dmso_ctcf, at = c(0, 180), fontsize = 6)
+annoYaxis(plot = dp_ctcf, at = c(0, 180), fontsize = 6)
+plotText(label = "DMSO\nCTCF", x = 0.5, y = 2.8, fontsize = 10, just = c("center", "center"))
+plotText(label = "DP\nCTCF", x = 0.5, y = 3.3, fontsize = 10, just = c("center", "center"))
+plotText(label = "Genes", x = 0.5, y = 3.75, fontsize = 10, just = c("center", "center"))
+
+
+dmso_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B36_DMSO_CTCF.bw",
+                       binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr), chromstart = 25832500, chromend = 25946700, 
+                       assembly = "hg38", linecolor = "red", fill = "red", ymax = 1, range = c(0,200), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                       baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 0.75, y = 4.5, width = 0.5, height = 0.5, 
+                       just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+
+dp_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B36_DP_CTCF.bw",
+                     binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr), chromstart = 25832500, chromend = 25946700, 
+                     assembly = "hg38", linecolor = "#37a7db", fill = "#37a7db", ymax = 1, range = c(0,200), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                     baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 0.75, y = 5, width = 0.5, height = 0.5, 
+                     just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+annoYaxis(plot = dmso_ctcf, at = c(0, 180), fontsize = 6)
+annoYaxis(plot = dp_ctcf, at = c(0, 180), fontsize = 6)
+
+dmso_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B36_DMSO_CTCF.bw",
+                       binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr), chromstart = 27076660, chromend = 27200670, 
+                       assembly = "hg38", linecolor = "red", fill = "red", ymax = 1, range = c(0,250), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                       baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 1.75, y = 4.5, width = 0.5, height = 0.5, 
+                       just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+
+dp_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B36_DP_CTCF.bw",
+                     binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr), chromstart = 27076660, chromend = 27200670, 
+                     assembly = "hg38", linecolor = "#37a7db", fill = "#37a7db", ymax = 1, range = c(0,250), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                     baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 1.75, y = 5, width = 0.5, height = 0.5, 
+                     just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+annoYaxis(plot = dmso_ctcf, at = c(0, 225), fontsize = 6)
+annoYaxis(plot = dp_ctcf, at = c(0, 225), fontsize = 6)
+
+## Add genes
+params_e <- pgParams(chrom = paste0("chr",chr), chromstart = start, chromend = end, 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 0.75, width = 1.5, default.units = "inches")
+genes_gm <- plotGenes(params = params_e, stroke = 1, fontsize = 6,
+                      strandLabels = FALSE,
+                      y = 3.5, height = 0.4)
+## Annotate genome label
+annoGenomeLabel(plot = genes_gm, params = params_e, 
+                scale = "Mb", fontsize = 6,
+                y = 4)
+params_g <- pgParams(chrom = "7", chromstart = 25832500, chromend = 25946700, 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 0.75, width = 0.5, default.units = "inches")
+plotGenomeLabel(params = params_g, 
+                scale = "Mb", fontsize = 3,
+                length = 0.5, y = 5.5)
+params_g <- pgParams(chrom = "7", chromstart = 27076660, chromend = 27200670, 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 1.75, width = 0.5, default.units = "inches")
+plotGenomeLabel(params = params_g, 
+                scale = "Mb", fontsize = 3,
+                length = 0.5, y = 5.5)
+## Add box around zoom
+plotRect(x = 1, y = 5, width = 0.5, height = 1, just = "center", default.units = "inches", linecolor = "black",
+         lwd = 1, lty = 1, fill = "pink", alpha = 0.25)
+plotRect(x = 2, y = 5, width = 0.5, height = 1, just = "center", default.units = "inches", linecolor = "black",
+         lwd = 1, lty = 1, fill = "skyblue", alpha = 0.25)
+plotSegments(x0 = 0.75, y0 = 5, x1 = 1.25, y1 = 5, default.units = "inches", lty = 1, lwd = 1.5, col = "black")
+plotSegments(x0 = 1.75, y0 = 5, x1 = 2.25, y1 = 5, default.units = "inches", lty = 1, lwd = 1.5, col = "black")
+
+plotRect(x = 1.05, y = 3.95, width = 0.1, height = 0.1, just = "center", default.units = "inches", linecolor = "black",
+         lwd = 1, lty = 1, fill = "pink", alpha = 0.5)
+plotRect(x = 2, y = 3.95, width = 0.1, height = 0.1, just = "center", default.units = "inches", linecolor = "black",
+         lwd = 1, lty = 1, fill = "skyblue", alpha = 0.5)
+plotSegments(x0 = 1, y0 = 4, x1 = 0.75, y1 = 4.5, default.units = "inches", lty = 1, lwd = 1.5, col = "black")
+plotSegments(x0 = 1.1, y0 = 4, x1 = 1.25, y1 = 4.5, default.units = "inches", lty = 1, lwd = 1.5, col = "black")
+plotSegments(x0 = 1.95, y0 = 4, x1 = 1.75, y1 = 4.5, default.units = "inches", lty = 1, lwd = 1.5, col = "black")
+plotSegments(x0 = 2.05, y0 = 4, x1 = 2.25, y1 = 4.5, default.units = "inches", lty = 1, lwd = 1.5, col = "black")
+plotCircle(x=1.51, y=1.28, r=0.05)
+plotCircle(x=1.51, y=2.23, r=0.05)
+
+## Text section label
+plotText(label = "B49", fontsize = 10, x = 3.5, y = 0.90, just = c("center", "center"), default.units = "inches")
+## Set genomic and dimension parameters in a `params` object
+params_c <- pgParams(chrom = chr, chromstart = start, chromend = end, 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 2.75, width = 1.5, default.units = "inches")
+## Get matrix
+dmso_mat = readHic("./matrix_for_plot/B49_DMSO.hic", chrom = chr, chromstart = start, chromend = end, assembly = "hg38",
+                   resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dmso <- plotHicTriangle(data = "./matrix_for_plot/B49_DMSO.hic", params = params_c,
+                            zrange = c(0, quantile(dmso_mat$counts, probs = cut_val1)), resolution = 10000, flip = TRUE,
+                            y = 2.5, height = 0.75, just = c("left", "bottom"))
+annoHeatmapLegend(plot = hic_dmso, x = 4.5, y = 1.25,width = 0.13, height = 1.2,just = c("right", "top"), fontcolor = "black")
+## Set genomic and dimension parameters in a `params` object
+params_d <- pgParams(chrom = chr, chromstart = start, chromend = end, 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 4.25, width = 1.5, default.units = "inches")
+## Get matrix
+dp_mat = readHic("./matrix_for_plot/B49_DP.hic", chrom = chr, chromstart = start, chromend = end, assembly = "hg38",
+                 resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dp <- plotHicTriangle(data = "./matrix_for_plot/B49_DP.hic", params = params_d,
+                          zrange = c(0, quantile(dmso_mat$counts, probs = cut_val1)), resolution = 10000,
+                          y = 1.75, height = 0.75, just = c("right", "bottom"))
+## Add line
+#plotSegments(x0 = 3.5, y0 = 1, x1 = 3.5, y1 = 4, default.units = "inches", lty = 2, lwd = 1.5, col = "black")
+## Add CTCF bigwig
+dmso_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B49_DMSO_CTCF.bw",
+                       binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr), chromstart = start, chromend = end, 
+                       assembly = "hg38", linecolor = "red", fill = NA, ymax = 1, range = c(0,150), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                       baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 2.75, y = 2.5, width = 1.5, height = 0.5, 
+                       just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+
+dp_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B49_DP_CTCF.bw",
+                     binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr), chromstart = start, chromend = end, 
+                     assembly = "hg38", linecolor = "#37a7db", fill = NA, ymax = 1, range = c(0,150), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                     baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 2.75, y = 3, width = 1.5, height = 0.5, 
+                     just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+
+annoYaxis(plot = dmso_ctcf, at = c(0, 135), fontsize = 6)
+annoYaxis(plot = dp_ctcf, at = c(0, 135), fontsize = 6)
+#plotText(label = "DMSO\nCTCF", x = 2.5, y = 2.75, fontsize = 6, just = c("center", "center"))
+#plotText(label = "DP\nCTCF", x = 2.5, y = 3.25, fontsize = 6, just = c("center", "center"))
+
+dmso_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B49_DMSO_CTCF.bw",
+                       binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr), chromstart = 25832500, chromend = 25946700, 
+                       assembly = "hg38", linecolor = "red", fill = "red", ymax = 1, range = c(0,200), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                       baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 2.75, y = 4.5, width = 0.5, height = 0.5, 
+                       just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+
+dp_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B49_DP_CTCF.bw",
+                     binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr), chromstart = 25832500, chromend = 25946700, 
+                     assembly = "hg38", linecolor = "#37a7db", fill = "#37a7db", ymax = 1, range = c(0,200), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                     baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 2.75, y = 5, width = 0.5, height = 0.5, 
+                     just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+annoYaxis(plot = dmso_ctcf, at = c(0, 180), fontsize = 6)
+annoYaxis(plot = dp_ctcf, at = c(0, 180), fontsize = 6)
+
+dmso_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B49_DMSO_CTCF.bw",
+                       binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr), chromstart = 27076660, chromend = 27200670, 
+                       assembly = "hg38", linecolor = "red", fill = "red", ymax = 1, range = c(0,250), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                       baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 3.75, y = 4.5, width = 0.5, height = 0.5, 
+                       just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+
+dp_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B49_DP_CTCF.bw",
+                     binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr), chromstart = 27076660, chromend = 27200670, 
+                     assembly = "hg38", linecolor = "#37a7db", fill = "#37a7db", ymax = 1, range = c(0,250), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                     baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 3.75, y = 5, width = 0.5, height = 0.5, 
+                     just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+annoYaxis(plot = dmso_ctcf, at = c(0, 225), fontsize = 6)
+annoYaxis(plot = dp_ctcf, at = c(0, 225), fontsize = 6)
+
+## Add genes
+params_e <- pgParams(chrom = paste0("chr",chr), chromstart = start, chromend = end, 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 2.75, width = 1.5, default.units = "inches")
+genes_gm <- plotGenes(params = params_e, stroke = 1, fontsize = 6,
+                      strandLabels = FALSE,
+                      y = 3.5, height = 0.4)
+## Annotate genome label
+annoGenomeLabel(plot = genes_gm, params = params_e, 
+                scale = "Kb", fontsize = 6,
+                y = 4)
+params_g <- pgParams(chrom = "7", chromstart = 25832500, chromend = 25946700, 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 2.75, width = 0.5, default.units = "inches")
+plotGenomeLabel(params = params_g, 
+                scale = "Mb", fontsize = 3,
+                length = 0.5, y = 5.5)
+params_g <- pgParams(chrom = "7", chromstart = 27076660, chromend = 27200670, 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 3.75, width = 0.5, default.units = "inches")
+plotGenomeLabel(params = params_g, 
+                scale = "Mb", fontsize = 3,
+                length = 0.5, y = 5.5)
+## Add box around zoom
+plotRect(x = 3, y = 5, width = 0.5, height = 1, just = "center", default.units = "inches", linecolor = "black",
+         lwd = 1, lty = 1, fill = "pink", alpha = 0.25)
+plotRect(x = 4, y = 5, width = 0.5, height = 1, just = "center", default.units = "inches", linecolor = "black",
+         lwd = 1, lty = 1, fill = "skyblue", alpha = 0.25)
+plotSegments(x0 = 2.75, y0 = 5, x1 = 3.25, y1 = 5, default.units = "inches", lty = 1, lwd = 1.5, col = "black")
+plotSegments(x0 = 3.75, y0 = 5, x1 = 4.25, y1 = 5, default.units = "inches", lty = 1, lwd = 1.5, col = "black")
+
+plotRect(x = 3.05, y = 3.95, width = 0.1, height = 0.1, just = "center", default.units = "inches", linecolor = "black",
+         lwd = 1, lty = 1, fill = "pink", alpha = 0.5)
+plotRect(x = 4, y = 3.95, width = 0.1, height = 0.1, just = "center", default.units = "inches", linecolor = "black",
+         lwd = 1, lty = 1, fill = "skyblue", alpha = 0.5)
+plotSegments(x0 = 3, y0 = 4, x1 = 2.75, y1 = 4.5, default.units = "inches", lty = 1, lwd = 1.5, col = "black")
+plotSegments(x0 = 3.1, y0 = 4, x1 = 3.25, y1 = 4.5, default.units = "inches", lty = 1, lwd = 1.5, col = "black")
+plotSegments(x0 = 3.95, y0 = 4, x1 = 3.75, y1 = 4.5, default.units = "inches", lty = 1, lwd = 1.5, col = "black")
+plotSegments(x0 = 4.05, y0 = 4, x1 = 4.25, y1 = 4.5, default.units = "inches", lty = 1, lwd = 1.5, col = "black")
+plotCircle(x=3.51, y=1.28, r=0.05)
+plotCircle(x=3.51, y=2.23, r=0.05)
+
+## Text section label
+plotText(label = "B66", fontsize = 10, x = 5.5, y = 0.90, just = c("center", "center"), default.units = "inches")
+## Set genomic and dimension parameters in a `params` object
+params_c <- pgParams(chrom = chr, chromstart = start, chromend = end, 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 4.75, width = 1.5, default.units = "inches")
+## Get matrix
+dmso_mat = readHic("./matrix_for_plot/B66_DMSO.hic", chrom = chr, chromstart = start, chromend = end, assembly = "hg38",
+                   resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dmso <- plotHicTriangle(data = "./matrix_for_plot/B66_DMSO.hic", params = params_c,
+                            zrange = c(0, quantile(dmso_mat$counts, probs = cut_val)), resolution = 10000, flip = TRUE,
+                            y = 2.5, height = 0.75, just = c("left", "bottom"))
+annoHeatmapLegend(plot = hic_dmso, x = 6.5, y = 1.25,width = 0.13, height = 1.2,just = c("right", "top"), fontcolor = "black")
+## Set genomic and dimension parameters in a `params` object
+params_d <- pgParams(chrom = chr, chromstart = start, chromend = end, 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 6.25, width = 1.5, default.units = "inches")
+## Get matrix
+dp_mat = readHic("./matrix_for_plot/B66_DP.hic", chrom = chr, chromstart = start, chromend = end, assembly = "hg38",
+                 resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dp <- plotHicTriangle(data = "./matrix_for_plot/B66_DP.hic", params = params_d,
+                          zrange = c(0, quantile(dmso_mat$counts, probs = cut_val)), resolution = 10000,
+                          y = 1.75, height = 0.75, just = c("right", "bottom"))
+
+## Add line
+#plotSegments(x0 = 5.5, y0 = 1, x1 = 5.5, y1 = 4, default.units = "inches", lty = 2, lwd = 1.5, col = "black")
+## Add CTCF bigwig
+dmso_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B66_DMSO_CTCF.bw",
+                       binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr), chromstart = start, chromend = end, 
+                       assembly = "hg38", linecolor = "red", fill = NA, ymax = 1, range = c(0,150), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                       baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 4.75, y = 2.5, width = 1.5, height = 0.5, 
+                       just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+
+dp_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B66_DP_CTCF.bw",
+                     binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr), chromstart = start, chromend = end, 
+                     assembly = "hg38", linecolor = "#37a7db", fill = NA, ymax = 1, range = c(0,150), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                     baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 4.75, y = 3, width = 1.5, height = 0.5, 
+                     just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+
+annoYaxis(plot = dmso_ctcf, at = c(0, 135), fontsize = 6)
+annoYaxis(plot = dp_ctcf, at = c(0, 135), fontsize = 6)
+## Add zoom
+dmso_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B66_DMSO_CTCF.bw",
+                       binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr), chromstart = 25832500, chromend = 25946700, 
+                       assembly = "hg38", linecolor = "red", fill = "red", ymax = 1, range = c(0,100), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                       baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 4.75, y = 4.5, width = 0.5, height = 0.5, 
+                       just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+
+dp_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B66_DP_CTCF.bw",
+                     binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr), chromstart = 25832500, chromend = 25946700, 
+                     assembly = "hg38", linecolor = "#37a7db", fill = "#37a7db", ymax = 1, range = c(0,100), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                     baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 4.75, y = 5, width = 0.5, height = 0.5, 
+                     just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+annoYaxis(plot = dmso_ctcf, at = c(0, 90), fontsize = 6)
+annoYaxis(plot = dp_ctcf, at = c(0, 90), fontsize = 6)
+
+dmso_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B66_DMSO_CTCF.bw",
+                       binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr), chromstart = 27076660, chromend = 27200670, 
+                       assembly = "hg38", linecolor = "red", fill = "red", ymax = 1, range = c(0,200), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                       baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 5.75, y = 4.5, width = 0.5, height = 0.5, 
+                       just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+
+dp_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B66_DP_CTCF.bw",
+                     binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr), chromstart = 27076660, chromend = 27200670, 
+                     assembly = "hg38", linecolor = "#37a7db", fill = "#37a7db", ymax = 1, range = c(0,200), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                     baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 5.75, y = 5, width = 0.5, height = 0.5, 
+                     just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+annoYaxis(plot = dmso_ctcf, at = c(0, 180), fontsize = 6)
+annoYaxis(plot = dp_ctcf, at = c(0, 180), fontsize = 6)
+## Add genes
+params_e <- pgParams(chrom = paste0("chr",chr), chromstart = start, chromend = end, 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 4.75, width = 1.5, default.units = "inches")
+genes_gm <- plotGenes(params = params_e, stroke = 1, fontsize = 6,
+                      strandLabels = FALSE,
+                      y = 3.5, height = 0.4)
+## Annotate genome label
+annoGenomeLabel(plot = genes_gm, params = params_e, 
+                scale = "Kb", fontsize = 6,
+                y = 4)
+params_g <- pgParams(chrom = "7", chromstart = 25832500, chromend = 25946700, 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 4.75, width = 0.5, default.units = "inches")
+plotGenomeLabel(params = params_g, 
+                scale = "Mb", fontsize = 3,
+                length = 0.5, y = 5.5)
+params_g <- pgParams(chrom = "7", chromstart = 27076660, chromend = 27200670, 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 5.75, width = 0.5, default.units = "inches")
+plotGenomeLabel(params = params_g, 
+                scale = "Mb", fontsize = 3,
+                length = 0.5, y = 5.5)
+## Add box around zoom
+plotRect(x = 5, y = 5, width = 0.5, height = 1, just = "center", default.units = "inches", linecolor = "black",
+         lwd = 1, lty = 1, fill = "pink", alpha = 0.25)
+plotRect(x = 6, y = 5, width = 0.5, height = 1, just = "center", default.units = "inches", linecolor = "black",
+         lwd = 1, lty = 1, fill = "skyblue", alpha = 0.25)
+plotSegments(x0 = 4.75, y0 = 5, x1 = 5.25, y1 = 5, default.units = "inches", lty = 1, lwd = 1.5, col = "black")
+plotSegments(x0 = 5.75, y0 = 5, x1 = 6.25, y1 = 5, default.units = "inches", lty = 1, lwd = 1.5, col = "black")
+
+plotRect(x = 5.05, y = 3.95, width = 0.1, height = 0.1, just = "center", default.units = "inches", linecolor = "black",
+         lwd = 1, lty = 1, fill = "pink", alpha = 0.5)
+plotRect(x = 6, y = 3.95, width = 0.1, height = 0.1, just = "center", default.units = "inches", linecolor = "black",
+         lwd = 1, lty = 1, fill = "skyblue", alpha = 0.5)
+plotSegments(x0 = 5, y0 = 4, x1 = 4.75, y1 = 4.5, default.units = "inches", lty = 1, lwd = 1.5, col = "black")
+plotSegments(x0 = 5.1, y0 = 4, x1 = 5.25, y1 = 4.5, default.units = "inches", lty = 1, lwd = 1.5, col = "black")
+plotSegments(x0 = 5.95, y0 = 4, x1 = 5.75, y1 = 4.5, default.units = "inches", lty = 1, lwd = 1.5, col = "black")
+plotSegments(x0 = 6.05, y0 = 4, x1 = 6.25, y1 = 4.5, default.units = "inches", lty = 1, lwd = 1.5, col = "black")
+plotCircle(x=5.51, y=1.28, r=0.05)
+plotCircle(x=5.51, y=2.23, r=0.05)
+
+## Hide page guides
+pageGuideHide()
+dev.off()
+
+p_img <- image_read(tmp)
+p_img_cropped <- image_trim(p_img)
+p_gg <- ggplot() +
+  annotation_raster(p_img_cropped, xmin = 0, xmax = 1, ymin = 0, ymax = 1) +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), clip = "on") +
+  scale_x_continuous(breaks = NULL, expand = c(0, 0)) +
+  scale_y_continuous(breaks = NULL, expand = c(0, 0)) +
+  theme_void() +
+  theme(
+    plot.margin    = margin(0, 0, 0, 0),
+    axis.text      = element_blank(),
+    axis.ticks     = element_blank(),
+    axis.title     = element_blank(),
+    panel.border   = element_blank(),
+    panel.background = element_blank()
+  )
+
+Fig_4F = p_gg
+
+```
+
+```{r}
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/4_loop/4_loop_sep_deg")
+
+fastq.df <- data.frame(final=c("B36_DMSOvsDP_B36_DMSO_specific_dloops_family_final.txt", 
+                    "B36_DMSOvsDP_B36_DP_specific_dloops_family_final.txt",
+                    "B49_DMSOvsDP_B49_DMSO_specific_dloops_family_final.txt",
+                    "B49_DMSOvsDP_B49_DP_specific_dloops_family_final.txt",
+                    "B66_DMSOvsDP_B66_DMSO_specific_dloops_family_final.txt",
+                    "B66_DMSOvsDP_B66_DP_specific_dloops_family_final.txt"))
+family_list <- as.character(fastq.df$final)
+firstTime = TRUE #want to know the first time
+for (currentFile in family_list){ #read in files
+  print(currentFile)
+  teleTable.df <- as.data.frame(read.delim(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/4_loop/4_loop_sep_deg/",currentFile), header = TRUE))
+  #remove rows with less than 30 copies in ref genome
+  subset1_teleTable.df<- teleTable.df[teleTable.df$family_genomic_counts >= 30, ]
+  #remove rows with less than 10 copies overlapping atac-seq peaks
+  subset2_teleTable.df <- subset1_teleTable.df[subset1_teleTable.df$family_CTCF_peaks >= 10, ]
+  TE_family_enrichment_1 <- (log2(((subset2_teleTable.df$family_CTCF_peaks/subset2_teleTable.df$family_lengths)/(subset2_teleTable.df$total_CTCF_peaks_in_genome/subset2_teleTable.df$haploid_genome_bp))))
+  currentFile1 <- strsplit(currentFile, "/")[[1]]
+  currentFile2 <-tail(currentFile1, n=1)
+  #currentFileRoot <- gsub("_peaks_family_final.txt", "", currentFile2)
+  currentFileRoot = paste(strsplit(currentFile1, "_")[[1]][3],strsplit(currentFile1, "_")[[1]][4], sep="_")
+  print(currentFileRoot)
+  TE_family_enrichment_1.df <- as.data.frame(subset2_teleTable.df[c(1:2)])
+  TE_family_enrichment_1.df$currentFileRoot <- TE_family_enrichment_1
+  names(TE_family_enrichment_1.df)[names(TE_family_enrichment_1.df) == 'currentFileRoot'] <- currentFileRoot
+  #colnames(TE_enrichment_1.df) <- c("currentFileRoot", currentFileRoot)
+  if (firstTime == TRUE){
+    final_TE_family_enrichment_1.df <- TE_family_enrichment_1.df
+    firstTime = FALSE
+  } else {
+    final_TE_family_enrichment_1.df <- merge.data.frame(final_TE_family_enrichment_1.df,TE_family_enrichment_1.df, all = TRUE) #
+  }
+}
+final_TE_family_enrichment_1.df[is.na(final_TE_family_enrichment_1.df)] = 0
+rownames(final_TE_family_enrichment_1.df) <- final_TE_family_enrichment_1.df$family
+final_TE_family_enrichment.m <- as.matrix((final_TE_family_enrichment_1.df[!is.na(final_TE_family_enrichment_1.df$family), ]) %>% dplyr::select(-1,-2))
+colnames(final_TE_family_enrichment_1.df)[1] = "Class"
+row_ha= rowAnnotation(Class = final_TE_family_enrichment_1.df$Class,
+                      col= list(Class = c(
+                        "DNA"="#0027C3",
+                        "LTR"="#094A00",
+                        "LINE"="#DBD800",
+                        "SINE"="#C30000")), show_annotation_name=F)
+#LTR_ha= rowAnnotation(class = "LTR",
+#                      col= list(class = c(
+#                        "LTR"="#108500")), show_annotation_name=F)
+#tiff("/scratch/mmoore/Epitherapy3D/analysis/cutrun_all/new/2_TE_enrichment/CTCF_TE_class_enrichment_heatmap_v2.tiff", units="in", width=12, height=9, res=300)
+col_fun = circlize::colorRamp2(c(0, 1.5, 3), c("blue", "white", "red"))
+Supp_5F = Heatmap(
+    matrix = final_TE_family_enrichment.m,
+    show_row_names = TRUE,
+    row_names_gp = gpar(fontsize = 10),
+    column_title = "TE Family Enrichment",
+    column_names_gp = gpar(fontsize = 14),
+    column_title_gp = gpar(fontsize = 14),
+    border = TRUE,
+    cluster_columns = FALSE,
+    width = unit(10, "cm"),
+    height = unit(10, "cm"),
+    cluster_rows = FALSE,
+    na_col = "grey",
+    col = col_fun,
+    right_annotation = row_ha,
+    heatmap_legend_param = list(
+        title = "Enrichment",
+        title_gp = gpar(fontsize = 14),
+        labels_gp = gpar(fontsize = 14)
+    )
+)
+#dev.off()
+
+family_list <- as.character(fastq.df$final)
+family_list <- gsub("family", "subfamily", family_list)
+firstTime = TRUE #want to know the first time
+for (currentFile in family_list){ #read in files
+  print(currentFile)
+  teleTable.df <- as.data.frame(read.delim(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/4_loop/4_loop_sep_deg/",currentFile), header = TRUE))
+  #remove rows with less than 30 copies in ref genome
+  subset1_teleTable.df<- teleTable.df[teleTable.df$family_genomic_counts >= 30, ]
+  #remove rows with less than 10 copies overlapping atac-seq peaks
+  subset2_teleTable.df <- subset1_teleTable.df[subset1_teleTable.df$family_CTCF_peaks >= 10, ]
+  TE_family_enrichment_1 <- (log2(((subset2_teleTable.df$family_CTCF_peaks/subset2_teleTable.df$family_lengths)/(subset2_teleTable.df$total_CTCF_peaks_in_genome/subset2_teleTable.df$haploid_genome_bp))))
+  currentFile1 <- strsplit(currentFile, "/")[[1]]
+  currentFile2 <-tail(currentFile1, n=1)
+  #currentFileRoot <- gsub("_peaks_subfamily_final.txt", "", currentFile2)
+  currentFileRoot = paste(strsplit(currentFile1, "_")[[1]][3],strsplit(currentFile1, "_")[[1]][4], sep="_")
+  print(currentFileRoot)
+  TE_family_enrichment_1.df <- as.data.frame(subset2_teleTable.df[c(1:3)])
+  TE_family_enrichment_1.df$currentFileRoot <- TE_family_enrichment_1
+  names(TE_family_enrichment_1.df)[names(TE_family_enrichment_1.df) == 'currentFileRoot'] <- currentFileRoot
+  #colnames(TE_enrichment_1.df) <- c("currentFileRoot", currentFileRoot)
+  if (firstTime == TRUE){
+    final_TE_family_enrichment_1.df <- TE_family_enrichment_1.df
+    firstTime = FALSE
+  } else {
+    final_TE_family_enrichment_1.df <- merge.data.frame(final_TE_family_enrichment_1.df,TE_family_enrichment_1.df, all = TRUE) #
+  }
+}
+final_TE_family_enrichment_1.df[is.na(final_TE_family_enrichment_1.df)] = 0
+final_TE_family_enrichment_1.df <- distinct(final_TE_family_enrichment_1.df, subfamily, .keep_all = TRUE)
+rownames(final_TE_family_enrichment_1.df) <- final_TE_family_enrichment_1.df$subfamily
+final_TE_family_enrichment_2.df <- final_TE_family_enrichment_1.df#[final_TE_family_enrichment_1.df$family=="ERV1",]
+final_TE_family_enrichment.m <- as.matrix((final_TE_family_enrichment_2.df[!is.na(final_TE_family_enrichment_2.df$subfamily), ]) %>% dplyr::select(-1,-2,-3))
+colnames(final_TE_family_enrichment_1.df)[1] = "Class"
+row_ha= rowAnnotation(Class = final_TE_family_enrichment_1.df$Class,
+                      col= list(Class = c(
+                        "DNA"="#0027C3",
+                        "LTR"="#094A00",
+                        "LINE"="#DBD800",
+                        "SINE"="#C30000")), show_annotation_name=F)
+
+#LTR_ha= rowAnnotation(class = "LTR",
+#                      col= list(class = c(
+#                        "LTR"="#108500")), show_annotation_name=F)
+#
+#tiff("/scratch/mmoore/Epitherapy3D/analysis/cutrun_all/new/2_TE_enrichment/CTCF_TE_class_enrichment_heatmap_v2.tiff", units="in", width=12, height=9, res=300)
+col_fun = circlize::colorRamp2(c(0, 2, 4), c("blue", "white", "red"))
+Supp_5G = Heatmap(
+    matrix = final_TE_family_enrichment.m,
+    show_row_names = TRUE,
+    row_names_gp = gpar(fontsize = 10),
+    column_title = "TE Subfamily Enrichment",
+    column_names_gp = gpar(fontsize = 14),
+    column_title_gp = gpar(fontsize = 14),
+    border = TRUE,
+    cluster_columns = FALSE,
+    width = unit(10, "cm"),
+    height = unit(10, "cm"),
+    cluster_rows = FALSE,
+    na_col = "grey",
+    col = col_fun,
+    right_annotation = row_ha,
+    heatmap_legend_param = list(
+        title = "Enrichment",
+        title_gp = gpar(fontsize = 14),
+        labels_gp = gpar(fontsize = 14)
+    )
+)
+
+#dev.off()
+
+```
+
+```{r}
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/4_loop/8_TET")
+
+TET_filtered = read.table("teprof3_output_quantification.TE.cell_line_GBM.filtered.tsv")
+dp_rows <- grepl("DP", TET_filtered$V3)
+dmso_ids <- unique(TET_filtered$V1[grepl("DMSO", TET_filtered$V3)])
+TET_filtered_DP <- TET_filtered[dp_rows & !(TET_filtered$V1 %in% dmso_ids), ]
+TET_meta = read.table("8_1.tumor_specific_transcript_id.TSTET_of_cell_line_GBM.tsv", header=TRUE, sep="\t")
+TET_filtered_DP_bed = TET_meta[TET_meta$transcript_id %in% TET_filtered_DP$V1,1:4]
+TET_filtered_DP_bed_out = merge(TET_filtered_DP_bed, TET_filtered_DP[,c(1,7)], by.x = "transcript_id", by.y = "V1")
+TET_filtered_DP_bed_out = TET_filtered_DP_bed_out[,c(2,3,4,1,5)]
+write.table(TET_filtered_DP_bed_out, "teprof3_tumor_specific_DP_specific_TSTET.bed", quote = FALSE, sep = "\t", row.names = FALSE, col.names = FALSE)
+###bedtools intersected with differential loops
+loop_TET = read.table("diff_loop_indiv_teprof3_tumor_specific_DP_specific_TSTET.txt")
+loop_TET$V12 <- sapply(strsplit(loop_TET$V11, "_"), `[`, 1)
+
+upset_df <- loop_TET %>%
+  dplyr::select(gene = V10, cell = V12) %>%
+  distinct() %>%
+  mutate(value = TRUE) %>%
+  pivot_wider(
+    names_from = cell,
+    values_from = value,
+    values_fill = FALSE
+  )
+
+mat <- as.data.frame(upset_df)
+rownames(mat) <- mat$gene
+mat$gene <- NULL
+mat[] <- lapply(mat, as.integer)
+
+p = UpSetR::upset(
+  mat,
+  sets = colnames(mat),
+  nsets = length(colnames(mat)),
+  nintersects = 10, order.by = "freq", text.scale = 3
+)
+
+#TET_B49_B66 <- TET_meta[TET_meta$transcript_id %in% rownames(mat)[
+#  mat$B49 == 0 &
+#  mat$B66 == 1 &
+#  mat$B36 == 1
+#],]
+
+tmp <- tempfile(fileext = ".png")
+png(tmp, width = 10, height = 6, units = "in", res = 300)
+print(p)
+dev.off()
+
+p_img <- png::readPNG(tmp)
+
+p_gg <- ggplot() +
+  annotation_raster(p_img, xmin = 0, xmax = 1, ymin = 0, ymax = 1) +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), clip = "on") +
+  scale_x_continuous(breaks = NULL, expand = c(0, 0)) +
+  scale_y_continuous(breaks = NULL, expand = c(0, 0)) +
+  theme_void() +
+  theme(
+    plot.margin    = margin(0, 0, 0, 0),
+    axis.text      = element_blank(),
+    axis.ticks     = element_blank(),
+    axis.title     = element_blank(),
+    panel.border   = element_blank(),
+    panel.background = element_blank()
+  )
+
+Supp_5H = p_gg
+
+
+
+```
+
+
+```{r}
+#Fig4
+layout <- "AAA########
+           AAA########
+           BBB########
+           BBBEEEEEEEE
+           CCCEEEEEEEE
+           CCCEEEEEEEE
+           CCCEEEEEEEE
+           CCCEEEEEEEE
+           DDD########
+           DDD########
+           DDD########
+           "
+
+Fig4 <- wrap_plots(Fig_4A, Fig_4C, Fig_4D, Fig_4E, Fig_4F, design = layout) &
+    theme(plot.margin = margin(15, 15, 15, 15))
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/Full_Figure4test.pdf"), width = 20, height = 24)
+print(Fig4)
+dev.off()
+
+#Supp Fig5
+layout <- "AAAA#####CCC
+           AAAA#####CCC
+           BBBB#####DDD
+           BBBB#####DDD
+           EEEEFFFFGGGG
+           EEEEFFFFGGGG
+           "
+
+Supp_Fig5 <- wrap_plots(Supp_5A, Supp_5B, Supp_5C, Supp_5D, as.grob(Supp_5F), as.grob(Supp_5G), Supp_5H, design = layout) &
+    theme(plot.margin = margin(25, 25, 25, 25)) +
+  plot_layout(widths = c(1, 1, 1))
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/Full_Supp_Figure5test.pdf"), width = 24, height = 18)
+print(Supp_Fig5)
+dev.off()
+
+```
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

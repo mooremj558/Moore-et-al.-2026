@@ -1,0 +1,2057 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+library("data.table")
+library("preprocessCore")
+library("stringr")
+library("ggplot2")
+library("reshape2")
+library("limma")
+library("plotgardener")
+library("Rmisc")
+library("FactoMineR")
+library("factoextra")
+library(patchwork)
+library(ggplotify)
+library(grid)
+library(magick)
+library(rstatix)
+library(clusterProfiler)
+library(msigdbr)
+```
+
+```{r}
+###Quantile Normalization
+WorkingDirectory <- "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/2_TAD/3DNetMod/diff_bound/"
+DISuffix <- "DI"
+setwd(WorkingDirectory)
+
+files=list.files(path="./0_input", pattern= paste0(DISuffix), full.names=T)
+data = list()
+for (file in files){
+  print(file)
+  data[[file]] = data.frame(fread(file))
+  }
+mat = Reduce(function(...)merge(...,by=c("V1","V2","V3")),data)
+LenOfMatrix = as.numeric(3+length(files))
+colnames(mat)[4:LenOfMatrix] = sub(paste0(".\\/0_input\\/(.*)",".10k.noY.DI"), "\\1", files)
+eq0 = mat[,4:LenOfMatrix]==0
+num_Eq0 = rowSums(eq0)
+mat2 = mat[which(num_Eq0<length(files)),]
+qtl = normalize.quantiles(as.matrix(mat2[,4:LenOfMatrix]))
+mat3 = cbind(mat2[,1:3],qtl)
+mat3 = mat3[order(mat3$V1,mat3$V2),]
+for (i in 1:length(files)){
+name = sub(paste0(".\\/0_input\\/(.*)","10k.noY.DI"), "\\1", files)[i]
+out = mat3[,c(1:3,i+3)]
+write.table(out,paste0("1_DI_quantile_normalization/", name, "normalized.DI.bdg"),row.names=F,col.names=F,quote=F,sep="\t")
+}  
+
+```
+
+```{r}
+###Quantile Normalization of Mega
+WorkingDirectory <- "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/2_TAD/3DNetMod/diff_bound/"
+DISuffix <- "DI"
+setwd(WorkingDirectory)
+
+files=list.files(path="./0_input_mega", pattern= paste0(DISuffix), full.names=T)
+data = list()
+for (file in files){
+  print(file)
+  data[[file]] = data.frame(fread(file))
+  }
+mat = Reduce(function(...)merge(...,by=c("V1","V2","V3")),data)
+LenOfMatrix = as.numeric(3+length(files))
+colnames(mat)[4:LenOfMatrix] = sub(paste0(".\\/0_input_mega\\/(.*)",".10k.noY.DI"), "\\1", files)
+eq0 = mat[,4:LenOfMatrix]==0
+num_Eq0 = rowSums(eq0)
+mat2 = mat[which(num_Eq0<length(files)),]
+qtl = normalize.quantiles(as.matrix(mat2[,4:LenOfMatrix]))
+mat3 = cbind(mat2[,1:3],qtl)
+mat3 = mat3[order(mat3$V1,mat3$V2),]
+for (i in 1:length(files)){
+name = sub(paste0(".\\/0_input_mega\\/(.*)","10k.noY.DI"), "\\1", files)[i]
+out = mat3[,c(1:3,i+3)]
+write.table(out,paste0("1_DI_quantile_normalization/", name, "normalized.DI.bdg"),row.names=F,col.names=F,quote=F,sep="\t")
+}  
+
+```
+
+```{r}
+###Merge Boundaries
+WorkingDirectory <- "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/2_TAD/3DNetMod/diff_bound/"
+setwd(WorkingDirectory)
+
+data = data.frame(fread(paste0("./2_boundaries_with_DI/", "boundary.all.uniq.txt")))
+colnames(data) = c("chr","boundary","sample")
+
+combined = list()
+while ( nrow(data)>0){
+tad = data[1,]
+idx = which(data$chr == tad$chr & data$boundary==tad$boundary)
+tad$samples = paste(sort(data[idx,"sample"]),collapse=",")
+len = length(combined)
+combined[[len+1]] = tad
+data = data[-idx,]
+}
+
+tads = do.call(rbind,combined)
+
+tads$num_calls = str_count(tads$samples,",")+1
+
+write.table(tads[,c(1,2,4,5)],paste0("./2_boundaries_with_DI/", "combined_boundary.uniq.txt"),row.names=F,sep='\t',quote=F)
+
+```
+
+```{r}
+###Calculate delta DI
+WorkingDirectory <- "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/2_TAD/3DNetMod/diff_bound/"
+setwd(WorkingDirectory)
+
+files = list.files(path="./2_boundaries_with_DI",pattern=paste0("*", "DI.overlap.txt"),full.names=T)
+
+delist = list()
+for (file in files){
+	print(file)
+	data = read.delim(file,header=F)
+	data$dist = ceiling((data$V6-data$V2)/10000)-5
+	pre = data[which(data$dist>=-5 & data$dist<=-1),]
+	pos = data[which(data$dist<= 5 & data$dist>= 0),]
+	# ~ in aggregate() separates, to the left side, what is being "aggregated", and to the right side, what is being used to "aggregate" the items.
+	pre.neq0 = aggregate(V8~V4,pre,function(x){length(which(x!=0))})
+	pos.neq0 = aggregate(V8~V4,pos,function(x){length(which(x!=0))})
+	pre.ave = aggregate(V8~V4,pre,mean)
+	pos.ave = aggregate(V8~V4,pos,mean)
+	#comb = do.call(merge,pre.ave,pos.ave,num_neq0,by="V4")
+	comb = Reduce(function(...)merge(...,by="V4"),list(pre.ave,pos.ave,pre.neq0,pos.neq0))
+	comb$num_neq0 = ifelse(comb[,4]>comb[,5], comb[,5],comb[,4])
+	comb$delta = comb$V8.y-comb$V8.x
+	delist[[file]] = comb[,c(1,6,7)]
+}
+out = Reduce(function(...) merge(...,by = c("V4")),delist)
+colnames(out) = c("name",
+paste0(rep(c("num_neq0","delta"),length(files)),".",
+rep(sub(".\\/2_boundaries_with_DI\\/(.*).DI.overlap.txt","\\1",files),each=2)
+))
+write.csv(out,paste0("./2_boundaries_with_DI/", "boundary.DI_delta.csv"),row.names=F)
+
+```
+
+```{r}
+###Get non-redundant boundaries
+WorkingDirectory <- "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/2_TAD/3DNetMod/diff_bound/"
+DISuffix <- "DI"
+PREFIX <- "GSC"
+setwd(WorkingDirectory)
+
+a = read.csv(paste0("2_boundaries_with_DI/", "boundary.DI_delta.csv"),stringsAsFactors=F)
+a = a[-which( rowSums(a[,seq(2,ncol(a),2)]<5)>0),]
+qtl = a[,seq(3,ncol(a),2)]
+a2 = data.frame(a$name,qtl)
+colnames(a2) = colnames(a)[c(1,seq(3,ncol(a),2))]
+a2$max = apply(a2[,2:ncol(a2)],1,max)
+
+b = read.delim("2_boundaries_with_DI/combined_boundary.uniq.txt",header=T)
+b$name = paste0(b$chr,":",b$boundary)
+b = b[match(a2$name,b$name),]
+b$B36_DMSO = grepl("B36_DMSO",b$samples)
+b$B36_DP = grepl("B36_DP",b$samples)
+b$B49_DMSO = grepl("B49_DMSO",b$samples)
+b$B49_DP = grepl("B49_DP",b$samples)
+b$B66_DMSO = grepl("B66_DMSO",b$samples)
+b$B66_DP = grepl("B66_DP",b$samples)
+
+true = as.numeric(unlist(a2[,c(2:14)])[unlist(b[,rep(6:11,each=2)])])
+false = as.numeric( unlist(a2[,c(2:14)])[unlist(!b[,rep(6:11,each=2)])])
+dat = data.frame(c(true,false),c(rep("true",length(true)),rep("false",length(false))))
+colnames(dat) =c("value","type")
+
+# set the cutoff for tad boundaries. 
+CUTOFF = 100
+for (CUTOFF in c(0,25,50,100,150,200,300,500)){
+	print(CUTOFF)
+	bd = a2[which(a2$max>=CUTOFF),] # only take boundaries that its max DI_delta passes the cut-off.
+	bd$chr=sub("(chr.*):(.*)","\\1",bd$name)
+	bd$loc=as.numeric(sub("(chr.*):(.*)","\\2",bd$name))
+	chr_col = ncol(bd)-1; loc_col = ncol(bd); max_col = ncol(bd)-2; data_col = ncol(bd)-3 # re-arrange bd matrix
+	bd = bd[,c(chr_col, loc_col, max_col, 2:data_col)]
+	bd = bd[order(-bd$max),] # sort them based on boundaries' max DI_delta across samples
+	colnames(bd)[1:3] = c("chr","boundary","max")
+	combined = list()
+	while (nrow(bd)>0){
+		tad = bd[1,]
+		idx = which( bd$chr == tad$chr & abs(bd$boundary-tad$boundary)<=50000 ) # remove spatially appoximate boundaries
+		#tad$samples = paste(sort(sub("(.{12}).*.TAD.bed","\\1",bd[idx,"sample"])),collapse=",")
+		len = length(combined)
+		combined[[len+1]] = tad
+		bd = bd[-idx,]
+	}
+	print(length(combined))
+	tads = do.call(rbind,combined) # B36: 2245 
+	write.csv(tads,paste0("3_non_redundant_boundary/", PREFIX, "_combined_boundary.DI_cutoff.",CUTOFF,".all.csv"))
+	write.table(tads,paste0("3_non_redundant_boundary/", PREFIX, "_combined_boundary.DI_cutoff.",CUTOFF,".all.tsv"), row.names=FALSE, sep="\t")
+}
+
+```
+
+```{r}
+###Differential boundary identification
+WorkingDirectory <- "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/2_TAD/3DNetMod/diff_bound/"
+setwd(WorkingDirectory)
+options(scipen = 999)
+
+dyn = data.frame()
+dyn.out = data.frame()
+dyn.names = list()
+for (i in c(100,25)) {
+CUTOFF = i
+a=read.csv(paste0("3_non_redundant_boundary/", "GSC_combined_boundary.DI_cutoff.",CUTOFF,".all.csv"),stringsAsFactors=F)
+a$B36_DMSO = a[,5] >CUTOFF & a[,6] > CUTOFF 
+a$B36_DP = a[,8] >CUTOFF & a[,9] > CUTOFF
+a$B49_DMSO = a[,11] >CUTOFF & a[,12] > CUTOFF
+a$B49_DP = a[,14] >CUTOFF & a[,15] > CUTOFF
+a$B66_DMSO = a[,17] >CUTOFF & a[,18] > CUTOFF
+a$B66_DP = a[,20] >CUTOFF & a[,21] > CUTOFF & a[,22] > CUTOFF
+colSums(a[,28:33])
+a$num_gtCT = rowSums(a[,28:33])
+table(a$num_gtCT)
+temp_dyn = a[which(a$num_gtCT >0),]
+out = a[,5:27]
+rownames(out)  =paste0(a$chr,":",a$boundary)
+out[out< 0] = 0
+out <- na.omit(out)  
+
+b = log2(out+1)
+group = factor(substr(colnames(b),7,nchar(colnames(b))-2))
+design = model.matrix(~0+group) %>% as.data.frame()
+colnames(design) = levels(group)
+v <- voom(b, design, plot=TRUE)
+fit = lmFit(v, design)
+myContrasts = c("B36_DMSO-B36_DP","B49_DMSO-B49_DP","B66_DMSO-B66_DP")
+contrast.matrix = eval(as.call(c(as.symbol("makeContrasts"),as.list(myContrasts),levels=list(design))))
+fit2 = contrasts.fit(fit, contrast.matrix)
+fit4 = eBayes(fit2,trend=F)
+fdr = apply(fit4$p.value,2,p.adjust,method="BH")
+apply(fdr<0.1,2,table)
+dyn.name = rownames(b)[which(rowSums(fdr<0.1)>0)]
+temp_dyn.out = temp_dyn[which(paste0(temp_dyn$chr,":",temp_dyn$boundary) %in% dyn.name),]
+
+dyn = rbind(dyn, temp_dyn)
+dyn.names = append(dyn.names, dyn.name)
+dyn.out = rbind(dyn.out, temp_dyn.out)
+}
+
+dyn = dyn[!duplicated(dyn[c('chr', 'boundary')]), ]
+dyn.out = dyn.out[!duplicated(dyn.out[c('chr', 'boundary')]), ]
+
+dyn.out = dyn.out[((dyn.out[,5]+dyn.out[,6])/2 > (dyn.out[,8]+dyn.out[,9])/2) & ((dyn.out[,11]+dyn.out[,12])/2 > (dyn.out[,14]+dyn.out[,15])/2) & ((dyn.out[,17]+dyn.out[,18])/2 > (dyn.out[,20]+dyn.out[,21]+dyn.out[,22])/3)
+               | ((dyn.out[,5]+dyn.out[,6])/2 < (dyn.out[,8]+dyn.out[,9])/2) & ((dyn.out[,11]+dyn.out[,12])/2 < (dyn.out[,14]+dyn.out[,15])/2) & ((dyn.out[,17]+dyn.out[,18])/2 < (dyn.out[,20]+dyn.out[,21]+dyn.out[,22])/3),]
+epi_weak = dyn.out[((dyn.out[,5]+dyn.out[,6])/2 > (dyn.out[,8]+dyn.out[,9])/2) & ((dyn.out[,11]+dyn.out[,12])/2 > (dyn.out[,14]+dyn.out[,15])/2) & ((dyn.out[,17]+dyn.out[,18])/2 > (dyn.out[,20]+dyn.out[,21]+dyn.out[,22])/3),]
+epi_strong = dyn.out[((dyn.out[,5]+dyn.out[,6])/2 < (dyn.out[,8]+dyn.out[,9])/2) & ((dyn.out[,11]+dyn.out[,12])/2 < (dyn.out[,14]+dyn.out[,15])/2) & ((dyn.out[,17]+dyn.out[,18])/2 < (dyn.out[,20]+dyn.out[,21]+dyn.out[,22])/3),]
+static = dyn[which(paste0(dyn$chr,":",dyn$boundary) %in% dyn.names == FALSE),]
+static = static[which(static$num_gtCT %in% 1:6),]
+
+### plot the TAD calls
+calls = dyn.out[,28:33]
+colnames(dyn.out) = gsub("delta.", "", colnames(dyn.out))
+write.table(dyn.out[,c(2,3,5:27)],"4_dynamic_boundary/dynamic_sig_withDI_new.txt",row.names=F,col.names=F,quote=F,sep="\t")
+write.table(epi_weak[,c(2,3,5:27)],"4_dynamic_boundary/dynamic_weakened_sig_withDI_new.txt",row.names=F,col.names=F,quote=F,sep="\t")
+write.table(epi_strong[,c(2,3,5:27)],"4_dynamic_boundary/dynamic_strengthened_sig_withDI_new.txt",row.names=F,col.names=F,quote=F,sep="\t")
+write.table(static[,c(2,3,5:27)],"4_dynamic_boundary/not_dynamic_sig_withDI_new.txt",row.names=F,col.names=F,quote=F,sep="\t")
+write.table(dyn[,c(2,3,5:27)],"4_dynamic_boundary/all_boundary_withDI_new.txt",row.names=F,col.names=F,quote=F,sep="\t")
+
+
+mat = dyn.out[,c(5,6,8,9,11,12,14,15,17,18,20,21,22)]
+mat[mat< 0] = 0
+mat = mat[order(calls$B36_DMSO,calls$B36_DP,calls$B49_DMSO,calls$B49_DP,calls$B66_DMSO,calls$B66_DP),]
+
+cor2 = cor(mat)
+hc2 = hclust(as.dist(1-cor2),method="average")
+hc2$order = 1:13
+pdf("tad_bd.DI_delta.sample_hc.pdf")#,height=3,width=4)
+plot(hc2)
+dev.off()
+
+rownames(mat) =1:nrow(mat)
+melted = reshape2::melt(as.matrix(mat))
+pdf("tad_bd.DI_delta_mega.pdf",height=5,width=4)
+col_fun = circlize::colorRamp2(c(0, 250, 500), c("blue", "white", "red"))
+heatmap_RNA = ComplexHeatmap::Heatmap(as.matrix(mat),
+                                      col = col_fun,
+                                      show_row_names = FALSE, 
+                                      show_column_names = TRUE, 
+                                      name="boundary_deltaDI",
+                                      cluster_rows = TRUE,
+                                      cluster_columns = FALSE,
+                                      row_gap = unit(2, "mm"),
+                                      row_title = NULL,
+                                      use_raster = FALSE,
+                                      border = TRUE)
+print(heatmap_RNA)
+dev.off()
+
+scaled_mat = t(scale(t(mat)))
+temp <- as.data.frame(scaled_mat) %>% drop_na()
+scaled_mat <- temp %>% as.matrix()
+pdf("tad_bd.DI_delta_mega_zscore_new.pdf",height=5,width=4)
+col_fun = circlize::colorRamp2(c(-3, 0, 3), c("lightblue", "white", "red"))
+heatmap_RNA = ComplexHeatmap::Heatmap(as.matrix(scaled_mat),
+                                      col = col_fun,
+                                      show_row_names = FALSE, 
+                                      show_column_names = TRUE, 
+                                      name="boundary_deltaDI",
+                                      cluster_rows = TRUE,
+                                      cluster_columns = FALSE,
+                                      row_gap = unit(2, "mm"),
+                                      row_title = NULL,
+                                      use_raster = FALSE,
+                                      border = TRUE)
+print(heatmap_RNA)
+dev.off()
+
+dyn.out_mega = dyn.out[,c(1:4,7,10,13,16,19,23:27)]
+mat1 = dyn.out_mega[,5:14]
+mat1[mat1< 0] = 0
+
+scaled_mat1 = t(scale(t(mat1)))
+temp <- as.data.frame(scaled_mat1) %>% drop_na()
+scaled_mat1 <- temp %>% as.matrix()
+pdf("tad_bd.DI_delta_mega_zscore_allGSC_new.pdf",height=5,width=4)
+col_fun = circlize::colorRamp2(c(-3, 0, 3), c("lightblue", "white", "red"))
+heatmap_RNA = ComplexHeatmap::Heatmap(as.matrix(scaled_mat1),
+                                      col = col_fun,
+                                      show_row_names = FALSE, 
+                                      show_column_names = TRUE, 
+                                      name="boundary_deltaDI",
+                                      cluster_rows = TRUE,
+                                      cluster_columns = FALSE,
+                                      row_gap = unit(2, "mm"),
+                                      row_title = NULL,
+                                      use_raster = FALSE,
+                                      border = TRUE,
+                                      row_split = 2,
+                                      show_heatmap_legend = FALSE,
+                                      heatmap_legend_param = list(
+                                      title_gp = gpar(fontsize = 14),
+                                      labels_gp = gpar(fontsize = 14)))
+print(heatmap_RNA)
+dev.off()
+
+lgd_continuous = Legend(
+  col_fun = circlize::colorRamp2(c(-3, 0, 3), c("lightblue", "white", "red")), at = c(-3, 0, 3),
+  title = "Boundary\nDelta DI",
+  title_gp = gpar(fontsize = 14), # Legend Title
+  labels_gp = gpar(fontsize = 14)
+)
+
+tmp <- tempfile(fileext = ".png")
+png(tmp, width = 1, height = 1.5, units = "in", res = 600)
+  grid.newpage()
+  draw(lgd_continuous, x = unit(0.5, "in"), y = unit(0.75, "in"), just = c("center", "center"))
+dev.off()
+  
+p_img <- image_read(tmp)
+#p_img_cropped <- image_trim(p_img)
+
+p_gg <- ggplot() +
+  annotation_raster(p_img, xmin = 0, xmax = 1, ymin = 0, ymax = 1) +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), clip = "on") +
+  scale_x_continuous(breaks = NULL, expand = c(0, 0)) +
+  scale_y_continuous(breaks = NULL, expand = c(0, 0)) +
+  theme_void() +
+  theme(
+    plot.margin    = margin(0, 0, 0, 0),
+    axis.text      = element_blank(),
+    axis.ticks     = element_blank(),
+    axis.title     = element_blank(),
+    panel.border   = element_blank(),
+    panel.background = element_blank()
+  )
+print(p_gg)
+
+Fig_2A2 = as.grob(heatmap_RNA)
+Fig_2A2_leg = p_gg
+
+###Stable vs dynamic stacked bar plot figure
+tad_bound <- c("Static","Stronger","Weaker")
+value <- c(nrow(static),nrow(epi_strong),nrow(epi_weak))
+lab <- c("TAD Boundaries", "TAD Boundaries", "TAD Boundaries")
+data <- data.frame(value,tad_bound, lab)
+data$tad_bound <- factor(data$tad_bound, levels=c("Weaker","Stronger","Static"))
+
+pdf("tad_bd.class_new.pdf",height=5,width=2.5)
+p <- ggplot(data, aes(x=lab, y=value, fill=tad_bound)) + geom_bar(position="fill", stat="identity", width=0.5) + 
+  xlab(NULL) + ylab("Number of TAD Boundaries") + ylim(0,7000) + 
+  theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+        panel.background = element_blank(), axis.line = element_line(colour = "black")) + 
+  scale_y_continuous(expand = c(0, 0)) + scale_x_discrete(expand = c(0, 0)) +
+  scale_fill_manual(values = c("#f44336", "#3d85c6","#F6caba")) + 
+  labs(fill="Boundary Type")
+print(p)
+dev.off()
+p_legend <- cowplot::get_legend(
+  p + theme(
+    legend.text = element_text(size = 14), 
+    legend.title = element_text(size = 14),
+    legend.key.size = unit(0.5, "cm")
+  )
+)
+Fig2A1_leg = p_legend
+
+
+p <- ggplot(data, aes(x=lab, y=value, fill=tad_bound)) + geom_bar(position="fill", stat="identity", width=0.5) + 
+  xlab(NULL) + ylab("Number of TAD Boundaries") + ylim(0,7000) + 
+  theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+        panel.background = element_blank(), axis.line = element_line(colour = "black"), legend.position = "none") + 
+  scale_y_continuous(expand = c(0, 0)) + scale_x_discrete(expand = c(0, 0)) +
+  scale_fill_manual(values = c("#f44336", "#3d85c6","#F6caba")) + 
+  labs(fill="Boundary Type")
+Fig2A1 = p
+
+```
+
+```{r}
+###Get all valid TADs
+WorkingDirectory <- "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/2_TAD/3DNetMod/diff_bound/"
+setwd(WorkingDirectory)
+options(scipen = 999)
+
+all_tads = read.table("4_dynamic_boundary/all_TADs.bed")
+
+all_tads_count <- aggregate(all_tads, by=list(all_tads$V1,all_tads$V2,all_tads$V3), FUN=length)[,1:4]
+colnames(all_tads_count) = c("chr","start","end","count")
+
+bd = all_tads_count
+bd = bd[order(-bd$count),] # sort them based on boundaries' max DI_delta across samples
+combined = list()
+while (nrow(bd)>0){
+	tad = bd[1,]
+	idx = which( bd$chr == tad$chr & abs(bd$start-tad$start)<=50000 & abs(bd$end-tad$end)<=50000 )
+	#tad$samples = paste(sort(sub("(.{12}).*.TAD.bed","\\1",bd[idx,"sample"])),collapse=",")
+	len = length(combined)
+	combined[[len+1]] = tad
+	bd = bd[-idx,]
+}
+print(length(combined))
+all_valid_tads = do.call(rbind,combined)
+
+write.table(all_valid_tads[,1:3],"4_dynamic_boundary/all_TADs_merged.bed",row.names=F,col.names=F,quote=F,sep="\t")
+
+```
+
+```{r}
+#3DNetMod number of boundaries using DI cutoffs
+plots=list()
+for (i in c(25,50,100)) {
+  bound_cutoff <- dyn[,c(5,6,8,9,11,12,14,15,17,18,20,21,22,24:27)] %>% dplyr::summarise(across(everything(), ~sum(. > i, na.rm = TRUE)))
+  bound_cutoff_long = bound_cutoff %>% pivot_longer(c(1:17))
+  bound_cutoff_long$name = gsub("delta.","",bound_cutoff_long$name)
+  bound_cutoff_long = bound_cutoff_long %>%
+    separate(col = name,
+             into = c("cell", "treat", "rep"),
+             sep = "_",
+             remove = FALSE)  
+  
+  pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/3DNetMod_DI",i,"_number.pdf"),width=4,height=3)
+  p = ggplot(bound_cutoff_long, aes(x=cell,y=value, colour = treat)) +
+    geom_boxplot() + 
+    geom_point(aes(color = treat), position = position_dodge(0.75), alpha = 0.7, size = 1) + labs(colour = "Treatment") +
+    #ylim(4500,7000) + 
+    theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black")) + xlab("") + ylab(paste0("Boundary Number (delta.DI > ",i,")"))
+  print(p)
+  dev.off() 
+  plots[[length(plots) + 1]] <- p
+}
+
+Supp_3C = plots[[1]]
+Supp_3D = plots[[3]]
+
+
+```
+
+
+```{r}
+###Domain caller TAD size and number
+WorkingDirectory <- "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/2_TAD/3DNetMod/diff_bound/"
+setwd(WorkingDirectory)
+options(scipen = 999)
+
+a=read.table("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/2_TAD/Bing/diff_bound/2_boundaries_with_DI/tad.num.txt")
+a=a[1:23,]
+a$names=c("B36_DMSO","B36_DMSO","B36_DMSO","B36_DP","B36_DP","B36_DP",
+       "B49_DMSO","B49_DMSO","B49_DMSO","B49_DP","B49_DP","B49_DP",
+       "B66_DMSO","B66_DMSO","B66_DMSO","B66_DP","B66_DP","B66_DP","B66_DP",
+       "NHA_DMSO","NHA_DP","qNHA_DMSO","qNHA_DP")
+a$cell=c("B36","B36","B36","B36","B36","B36",
+          "B49","B49","B49","B49","B49","B49",
+          "B66","B66","B66","B66","B66","B66","B66",
+          "NHA","NHA","qNHA","qNHA")
+a$treat=c("DMSO","DMSO","DMSO","DP","DP","DP",
+          "DMSO","DMSO","DMSO","DP","DP","DP",
+          "DMSO","DMSO","DMSO","DP","DP","DP","DP",
+          "DMSO","DP","DMSO","DP")
+a$rep=c("mega","1","2","mega","1","2",
+       "mega","1","2","mega","1","2",
+       "mega","1","2","mega","1","2","3",
+       "1","1","1","1")
+
+a=a[c(2,3,5,6,8,9,11,12,14,15,17,18,19,20,21,22,23),]
+
+pdf("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/Bing_TAD_number.pdf",width=4,height=3)
+p = ggplot(a, aes(x=cell,y=V1, colour = treat)) +
+  geom_boxplot() + 
+  geom_point(aes(color = treat), position = position_dodge(0.75), alpha = 0.7, size = 1.5) + labs(colour = "Treatment") +
+  ylim(3000,5000) + theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black")) + xlab("") + ylab("TAD Number (Domain caller)")
+print(p)
+dev.off()
+Supp_3A = p
+
+files = list.files("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/2_TAD/Bing/diff_bound/2_boundaries_with_DI/",pattern="TAD.bed")
+
+p.list = list()
+for (file in files){
+  data = data.frame(fread(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/2_TAD/Bing/diff_bound/2_boundaries_with_DI/",file)))
+  data$width = data$V3-data$V2
+  data$name = sub(".10k.noY.TAD.bed","\\1",file)
+  #median = median(data$width,na.rm=T)/1000
+  p.list[[length(p.list)+1]] = data
+}
+
+comb = do.call(rbind,p.list)
+comb$width=comb$width/1000000
+comb$Stage = sub(".10k.noY.TAD.bed","\\1",comb$name)
+comb <- separate(data = comb, col = Stage, into = c("cell", "treat","rep"), sep = "_")
+
+tgc <- summarySE(comb, measurevar="width", groupvars=c("cell","treat","rep"),na.rm=T)
+tgc = tgc[c(1,2,4,5,7,8,10,11,13,14,16,17,18,20,21,22,23),]
+
+pdf("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/Bing_TAD_size.pdf",width=3,height=3)
+p = ggplot(tgc, aes(x=cell, y=width, color=treat)) + 
+  geom_boxplot() + 
+  geom_point(aes(color = treat), position = position_dodge(0.75), alpha = 0.7, size = 1.5) + labs(colour = "Treatment") +
+  ylim(0.5,0.9) + theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), 
+                          axis.line = element_line(colour = "black")) + xlab("") + ylab("TAD Size (Domain caller)")
+print(p)
+dev.off()
+Supp_3B = p
+
+```
+
+```{r}
+###PCA using stable and dynamic boundaries
+test = t(dyn.out[,c(5,6,8,9,11,12,14,15,17,18,20,21,22)]) %>% as.data.frame()
+test$cell = c(rep("B36",4),rep("B49",4),rep("B66",5))
+test$treat = c(rep(c("DMSO","DMSO","DP","DP"),2),c("DMSO","DMSO","DP","DP","DP"))
+rownames(test) = gsub("delta.","",rownames(test))
+
+res.pca <- FactoMineR::PCA(test[,1:(ncol(test) - 2)], graph = FALSE)
+p = factoextra::fviz_pca_ind(res.pca, mean.point = FALSE, col.ind = test$treat, show.legend=FALSE, label = "none")
+p$layers[[1]]$data$tr <- factor(test$cell)
+p$layers[[1]]$mapping <- aes(x, y, colour = Col., shape = tr)
+p$layers[[1]]$aes_params$size <- 3
+p <- p + labs(shape = 'tr')
+p = ggpubr::ggpar(p,
+              title = "Principal Component Analysis",
+              subtitle = "Dynamic boundaries",
+              legend.title = list(color = "Treatment", shape = "Cell Line"),
+              ggtheme = theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))
+)
+pdf("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/3DNetMod_DI_PCA_dynamic.pdf",width=4,height=3)
+print(p)
+dev.off() 
+Fig_2D = p
+
+test = t(static[,c(5,6,8,9,11,12,14,15,17,18,20,21,22)]) %>% as.data.frame()
+test$cell = c(rep("B36",4),rep("B49",4),rep("B66",5))
+test$treat = c(rep(c("DMSO","DMSO","DP","DP"),2),c("DMSO","DMSO","DP","DP","DP"))
+rownames(test) = gsub("delta.","",rownames(test))
+
+res.pca <- FactoMineR::PCA(test[,1:(ncol(test) - 2)], graph = FALSE)
+p = factoextra::fviz_pca_ind(res.pca, mean.point = FALSE, col.ind = test$treat, show.legend=FALSE, label = "none")
+p$layers[[1]]$data$tr <- factor(test$cell)
+p$layers[[1]]$mapping <- aes(x, y, colour = Col., shape = tr)
+p$layers[[1]]$aes_params$size <- 3
+p <- p + labs(shape = 'tr')
+p = ggpubr::ggpar(p,
+              title = "Principal Component Analysis",
+              subtitle = "Stable boundaries",
+              legend.title = list(color = "Treatment", shape = "Cell Line"),
+              ggtheme = theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))
+)
+pdf("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/3DNetMod_DI_PCA_stable.pdf",width=4,height=3)
+print(p)
+dev.off() 
+Fig_2E = p
+
+###With NHA/qNHA
+test = t(dyn.out[,c(5,6,8,9,11,12,14,15,17,18,20,21,22,24:27)]) %>% as.data.frame()
+test$cell = c(rep("B36",4),rep("B49",4),rep("B66",5), c("NHA","NHA","qNHA","qNHA"))
+test$treat = c(rep(c("DMSO","DMSO","DP","DP"),2),c("DMSO","DMSO","DP","DP","DP","DMSO","DP","DMSO","DP"))
+rownames(test) = gsub("delta.","",rownames(test))
+
+res.pca <- FactoMineR::PCA(test[,1:(ncol(test) - 2)], graph = FALSE)
+p = factoextra::fviz_pca_ind(res.pca, mean.point = FALSE, col.ind = test$treat, show.legend=FALSE, label = "none")
+p$layers[[1]]$data$tr <- factor(test$cell)
+p$layers[[1]]$mapping <- aes(x, y, colour = Col., shape = tr)
+p$layers[[1]]$aes_params$size <- 3
+p <- p + labs(shape = 'tr')
+p = ggpubr::ggpar(p,
+              title = "Principal Component Analysis",
+              subtitle = "Dynamic boundaries",
+              legend.title = list(color = "Treatment", shape = "Cell Line"),
+              ggtheme = theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), 
+                              axis.line = element_line(colour = "black"))
+)
+pdf("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/3DNetMod_DI_PCA_withNHA_dynamic.pdf",width=4,height=3)
+print(p)
+dev.off() 
+Supp_3E = p
+
+test = t(static[,c(5,6,8,9,11,12,14,15,17,18,20,21,22,24:27)]) %>% as.data.frame()
+test$cell = c(rep("B36",4),rep("B49",4),rep("B66",5), c("NHA","NHA","qNHA","qNHA"))
+test$treat = c(rep(c("DMSO","DMSO","DP","DP"),2),c("DMSO","DMSO","DP","DP","DP","DMSO","DP","DMSO","DP"))
+rownames(test) = gsub("delta.","",rownames(test))
+
+res.pca <- FactoMineR::PCA(test[,1:(ncol(test) - 2)], graph = FALSE)
+p = factoextra::fviz_pca_ind(res.pca, mean.point = FALSE, col.ind = test$treat, show.legend=FALSE, label = "none")
+p$layers[[1]]$data$tr <- factor(test$cell)
+p$layers[[1]]$mapping <- aes(x, y, colour = Col., shape = tr)
+p$layers[[1]]$aes_params$size <- 3
+p <- p + labs(shape = 'tr')
+p = ggpubr::ggpar(p,
+              title = "Principal Component Analysis",
+              subtitle = "Stable boundaries",
+              legend.title = list(color = "Treatment", shape = "Cell Line"),
+              ggtheme = theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), 
+                              axis.line = element_line(colour = "black"))
+)
+pdf("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/3DNetMod_DI_PCA_withNHA_stable.pdf",width=4,height=3)
+print(p)
+dev.off() 
+Supp_3F = p
+```
+
+```{r}
+WorkingDirectory <- "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/2_TAD/3DNetMod/diff_bound/"
+setwd(WorkingDirectory)
+options(scipen = 999)
+
+###Rank differential boundaries by fold change from mega dDI for FAN-C aggregate plotting
+epi_strong_mega = epi_strong[,c(1:4,7,10,13,16,19,23:27)]
+epi_strong_mega[epi_strong_mega< 0] = 1
+epi_strong_FC = data.frame(chr = gsub("chr","",epi_strong_mega$chr), start = epi_strong_mega$boundary, end = epi_strong_mega$boundary+10000,
+                           FC_B36 = epi_strong_mega$delta.B36_DP/epi_strong_mega$delta.B36_DMSO,
+                           FC_B49 = epi_strong_mega$delta.B49_DP/epi_strong_mega$delta.B49_DMSO,
+                           FC_B66 = epi_strong_mega$delta.B66_DP/epi_strong_mega$delta.B66_DMSO)
+epi_strong_FC$Rank_B36 = rank(-epi_strong_FC$FC_B36)
+epi_strong_FC$Rank_B49 = rank(-epi_strong_FC$FC_B49)
+epi_strong_FC$Rank_B66 = rank(-epi_strong_FC$FC_B66)
+epi_strong_FC$average_rank = (epi_strong_FC$Rank_B36 + epi_strong_FC$Rank_B49 + epi_strong_FC$Rank_B66)/3
+sorted_epi_strong <- arrange(epi_strong_FC, average_rank)[,1:3]
+write.table(sorted_epi_strong[1:50,],"5_aggregate_boundaries/dynamic_strengthened_top50.bed",row.names=F,col.names=F,quote=F,sep="\t")
+write.table(sorted_epi_strong[51:100,],"5_aggregate_boundaries/dynamic_strengthened_second50.bed",row.names=F,col.names=F,quote=F,sep="\t")
+write.table(sorted_epi_strong[101:150,],"5_aggregate_boundaries/dynamic_strengthened_third50.bed",row.names=F,col.names=F,quote=F,sep="\t")
+
+epi_weak_mega = epi_weak[,c(1:4,7,10,13,16,19,23:27)]
+epi_weak_mega[epi_weak_mega< 0] = 1
+epi_weak_FC = data.frame(chr = gsub("chr","",epi_weak_mega$chr), start = epi_weak_mega$boundary, end = epi_weak_mega$boundary+10000,
+                           FC_B36 = epi_weak_mega$delta.B36_DP/epi_weak_mega$delta.B36_DMSO,
+                           FC_B49 = epi_weak_mega$delta.B49_DP/epi_weak_mega$delta.B49_DMSO,
+                           FC_B66 = epi_weak_mega$delta.B66_DP/epi_weak_mega$delta.B66_DMSO)
+epi_weak_FC$Rank_B36 = rank(epi_weak_FC$FC_B36)
+epi_weak_FC$Rank_B49 = rank(epi_weak_FC$FC_B49)
+epi_weak_FC$Rank_B66 = rank(epi_weak_FC$FC_B66)
+epi_weak_FC$average_rank = (epi_weak_FC$Rank_B36 + epi_weak_FC$Rank_B49 + epi_weak_FC$Rank_B66)/3
+sorted_epi_weak <- arrange(epi_weak_FC, average_rank)[,1:3]
+write.table(sorted_epi_weak[1:50,],"5_aggregate_boundaries/dynamic_weakened_top50.bed",row.names=F,col.names=F,quote=F,sep="\t")
+write.table(sorted_epi_weak[51:100,],"5_aggregate_boundaries/dynamic_weakened_second50.bed",row.names=F,col.names=F,quote=F,sep="\t")
+write.table(sorted_epi_weak[101:150,],"5_aggregate_boundaries/dynamic_weakened_third50.bed",row.names=F,col.names=F,quote=F,sep="\t")
+
+```
+
+```{r}
+WorkingDirectory <- "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/2_TAD/3DNetMod/diff_bound/"
+setwd(WorkingDirectory)
+options(scipen = 999)
+
+
+lgd_continuous = Legend(
+  col_fun = circlize::colorRamp2(c(-0.5, 0, 0.5), c("purple", "grey", "red")), at = c(-0.5, 0, 0.5)
+)
+pdf("./5_aggregate_boundaries/aggregate_DMSO_minus_DP_legend.pdf",height=5,width=4)
+grid.newpage()
+# Draw the legend
+draw(lgd_continuous, x = unit(3, "cm"), y = unit(2, "cm"), just = c("left", "bottom"))
+dev.off()
+
+lgd_continuous = Legend(
+  col_fun = circlize::colorRamp2(c(-0.5, 0, 0.5), c("purple", "grey", "red")), at = c(-0.5, 0, 0.5),
+  title = "log2(Obs-Exp)\nDMSO-DP",
+  title_gp = gpar(fontsize = 14), # Legend Title
+  labels_gp = gpar(fontsize = 14)
+)
+
+
+tmp <- tempfile(fileext = ".png")
+png(tmp, width = 3, height = 3, units = "in", res = 600)
+  grid.newpage()
+  draw(lgd_continuous, x = unit(2.25, "in"), y = unit(2.25, "in"), just = c("center", "center"))
+dev.off()
+  
+p_img <- image_read(tmp) |>
+  image_trim()
+p_img
+#p_img_cropped <- image_trim(p_img)
+
+p_gg <- ggplot() +
+  annotation_raster(p_img, xmin = 0, xmax = 1, ymin = 0, ymax = 1) +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), clip = "on") +
+  scale_x_continuous(breaks = NULL, expand = c(0, 0)) +
+  scale_y_continuous(breaks = NULL, expand = c(0, 0)) +
+  theme_void() +
+  theme(
+    plot.margin    = margin(0, 0, 0, 0),
+    axis.text      = element_blank(),
+    axis.ticks     = element_blank(),
+    axis.title     = element_blank(),
+    panel.border   = element_blank(),
+    panel.background = element_blank()
+  )
+print(p_gg)
+
+Fig_2B_leg = p_gg
+
+
+files = list.files(path="./5_aggregate_boundaries",pattern=paste0("DMSO_10kb_VC_SQRT.agg.txt"),full.names=T)
+files1 = list.files(path="./5_aggregate_boundaries",pattern=paste0("DP_10kb_VC_SQRT.agg.txt"),full.names=T)
+
+plots=list()
+col_fun = circlize::colorRamp2(c(-0.5, 0, 0.5), c("purple", "grey", "red"))
+for (i in 1:length(files)) {
+  m = read.table(files[i])
+  m1 = read.table(files1[i])
+  m2 = m-m1
+  
+  pdf(paste0(gsub("DMSO_10kb_VC_SQRT.agg.txt", "DMSO_minus_DP_agg_10kb_VC_SQRT.pdf", files[i])),height=5,width=4)
+  grid.newpage()
+  
+  ht = Heatmap(as.matrix(m2),
+                         name = "ht1",
+                         rect_gp = gpar(type = "none"),
+                         cluster_rows = F,
+                         cluster_columns = F,
+                         show_row_dend = F,
+                         show_column_dend = F,
+                         show_column_names = F,
+                         show_row_names = F,
+                         col = col_fun,
+                         border = F,
+                         show_heatmap_legend = F,
+                         width = unit(0.8, "snpc"),
+                         height = unit(0.8, "snpc"),
+                         layer_fun = function(j, i, x, y, width, height, fill) {
+                               l = i <= j
+                               grid.rect(x[l], y[l], width[l], height[l], gp = gpar(lwd = 1.5, fill = fill[l], col = fill[l]))
+                           }
+              )
+  pushViewport(viewport(angle = 45, width = 1/sqrt(2), height = 1/sqrt(2)))
+  draw(ht, newpage = FALSE)
+  popViewport()
+  dev.off()
+  
+  tmp <- tempfile(fileext = ".png")
+  png(tmp, width = 7, height = 4, units = "in", res = 300)
+  grid.newpage()
+  ht = Heatmap(as.matrix(m2),
+                         name = "ht1",
+                         rect_gp = gpar(type = "none"),
+                         cluster_rows = F,
+                         cluster_columns = F,
+                         show_row_dend = F,
+                         show_column_dend = F,
+                         show_column_names = F,
+                         show_row_names = F,
+                         col = col_fun,
+                         border = F,
+                         show_heatmap_legend = F,
+                         width = unit(0.8, "snpc"),
+                         height = unit(0.8, "snpc"),
+                         layer_fun = function(j, i, x, y, width, height, fill) {
+                               l = i <= j
+                               grid.rect(x[l], y[l], width[l], height[l], gp = gpar(lwd = 1.5, fill = fill[l], col = fill[l]))
+                           }
+              )
+  pushViewport(viewport(angle = 45, width = 1/1.5, height = 1/1.5))
+  draw(ht, newpage = FALSE)
+  popViewport()
+  dev.off()
+  
+  p_img <- image_read(tmp)
+  p_img_cropped <- image_trim(p_img)
+  
+  p_gg <- ggplot() +
+    annotation_raster(p_img_cropped, xmin = 0, xmax = 1, ymin = 0, ymax = 1) +
+    coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), clip = "on") +
+    scale_x_continuous(breaks = NULL, expand = c(0, 0)) +
+    scale_y_continuous(breaks = NULL, expand = c(0, 0)) +
+    theme_void() +
+    theme(
+      plot.margin    = margin(0, 0, 0, 0),
+      axis.text      = element_blank(),
+      axis.ticks     = element_blank(),
+      axis.title     = element_blank(),
+      panel.border   = element_blank(),
+      panel.background = element_blank()
+    )
+  plots[[paste0(gsub("DMSO_10kb_VC_SQRT.agg.txt", "DMSO_minus_DP_agg_10kb_VC_SQRT.pdf", files[i]))]] <- p_gg
+}
+
+```
+
+```{r}
+WorkingDirectory <- "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/2_TAD/3DNetMod/diff_bound/"
+setwd(WorkingDirectory)
+options(scipen = 999)
+
+###Weaker boundary examples - used 1mb window ; 0.8, 0.85, 0.9 max contact value as scale max
+chr = sorted_epi_weak$chr
+bound = sorted_epi_weak$start
+start = ifelse(sorted_epi_weak$start - 1000000 >=0, sorted_epi_weak$start - 1000000, 0)
+end = sorted_epi_weak$start + 1000000
+cut_val = 0.80
+
+#Plot top 150
+for (i in 1:150) {
+pdf(paste0("./6_diffbound_examples/weaker/",chr[i],"_",bound[i],"_0.80_1mb.pdf"),width = 7, height = 4.25)
+## Create a plotgardener page
+pageCreate(width = 7, height = 4.25, default.units = "inches")
+## Text section label
+plotText(label = "36", fontsize = 12,
+         x = 0.5, y = 1, just = c("left", "top"), default.units = "inches")
+## Set genomic and dimension parameters in a `params` object
+params_c <- pgParams(chrom = chr[i], chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 0.75, width = 1.5, default.units = "inches")
+## Get matrix
+dmso_mat = readHic("./matrix_for_plot/B36_DMSO.hic", chrom = chr[i], chromstart = start[i], chromend = end[i], assembly = "hg38",
+  resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dmso <- plotHicTriangle(data = "./matrix_for_plot/B36_DMSO.hic", params = params_c,
+                          zrange = c(0, quantile(dmso_mat$counts, probs = cut_val)), resolution = 10000, flip = TRUE,
+                          y = 2.5, height = 0.75, just = c("left", "bottom"))
+## Set genomic and dimension parameters in a `params` object
+params_d <- pgParams(chrom = chr[i], chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 2.25, width = 1.5, default.units = "inches")
+## Get matrix
+dp_mat = readHic("./matrix_for_plot/B36_DP.hic", chrom = chr[i], chromstart = start[i], chromend = end[i], assembly = "hg38",
+                   resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dp <- plotHicTriangle(data = "./matrix_for_plot/B36_DP.hic", params = params_d,
+                           zrange = c(0, quantile(dp_mat$counts, probs = cut_val)), resolution = 10000,
+                           y = 1.75, height = 0.75, just = c("right", "bottom"))
+## Add X scale
+annoGenomeLabel(
+  plot = hic_dmso, fontsize = 4,
+  x = 0.75, y = 2.5, width = 2.5, height = 0.25, default.units = "inches"
+)
+
+
+## Text section label
+plotText(label = "49", fontsize = 12,
+         x = 2.5, y = 1, just = c("left", "top"), default.units = "inches")
+## Set genomic and dimension parameters in a `params` object
+params_c <- pgParams(chrom = chr[i], chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 2.75, width = 1.5, default.units = "inches")
+## Get matrix
+dmso_mat = readHic("./matrix_for_plot/B49_DMSO.hic", chrom = chr[i], chromstart = start[i], chromend = end[i], assembly = "hg38",
+                   resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dmso <- plotHicTriangle(data = "./matrix_for_plot/B49_DMSO.hic", params = params_c,
+                            zrange = c(0, quantile(dmso_mat$counts, probs = cut_val)), resolution = 10000, flip = TRUE,
+                            y = 2.5, height = 0.75, just = c("left", "bottom"))
+## Set genomic and dimension parameters in a `params` object
+params_d <- pgParams(chrom = chr[i], chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 4.25, width = 1.5, default.units = "inches")
+## Get matrix
+dp_mat = readHic("./matrix_for_plot/B49_DP.hic", chrom = chr[i], chromstart = start[i], chromend = end[i], assembly = "hg38",
+                 resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dp <- plotHicTriangle(data = "./matrix_for_plot/B49_DP.hic", params = params_d,
+                          zrange = c(0, quantile(dp_mat$counts, probs = cut_val)), resolution = 10000,
+                          y = 1.75, height = 0.75, just = c("right", "bottom"))
+## Add X scale
+annoGenomeLabel(
+  plot = hic_dmso, fontsize = 4,
+  x = 2.75, y = 2.5, width = 2.5, height = 0.25, default.units = "inches"
+)
+
+
+## Text section label
+plotText(label = "66", fontsize = 12,
+         x = 4.5, y = 1, just = c("left", "top"), default.units = "inches")
+## Set genomic and dimension parameters in a `params` object
+params_c <- pgParams(chrom = chr[i], chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 4.75, width = 1.5, default.units = "inches")
+## Get matrix
+dmso_mat = readHic("./matrix_for_plot/B66_DMSO.hic", chrom = chr[i], chromstart = start[i], chromend = end[i], assembly = "hg38",
+                   resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dmso <- plotHicTriangle(data = "./matrix_for_plot/B66_DMSO.hic", params = params_c,
+                            zrange = c(0, quantile(dmso_mat$counts, probs = cut_val)), resolution = 10000, flip = TRUE,
+                            y = 2.5, height = 0.75, just = c("left", "bottom"))
+## Set genomic and dimension parameters in a `params` object
+params_d <- pgParams(chrom = chr[i], chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 6.25, width = 1.5, default.units = "inches")
+## Get matrix
+dp_mat = readHic("./matrix_for_plot/B66_DP.hic", chrom = chr[i], chromstart = start[i], chromend = end[i], assembly = "hg38",
+                 resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dp <- plotHicTriangle(data = "./matrix_for_plot/B66_DP.hic", params = params_d,
+                          zrange = c(0, quantile(dp_mat$counts, probs = cut_val)), resolution = 10000,
+                          y = 1.75, height = 0.75, just = c("right", "bottom"))
+## Add X scale
+annoGenomeLabel(
+  plot = hic_dmso, fontsize = 4,
+  x = 4.75, y = 2.5, width = 2.5, height = 0.25, default.units = "inches"
+)
+## Hide page guides
+pageGuideHide()
+dev.off()
+}
+
+```
+
+```{r}
+WorkingDirectory <- "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/2_TAD/3DNetMod/diff_bound/"
+setwd(WorkingDirectory)
+options(scipen = 999)
+
+###Stronger boundary examples
+chr = sorted_epi_strong$chr
+bound = sorted_epi_strong$start
+start = ifelse(sorted_epi_strong$start - 1000000 >=0, sorted_epi_strong$start - 1000000, 0)
+end = sorted_epi_strong$start + 1000000
+cut_val = 0.80
+
+#Plot top 150
+for (i in 1:150) {
+pdf(paste0("./6_diffbound_examples/stronger/",chr[i],"_",bound[i],"_0.80_1mb.pdf"),width = 7, height = 4.25)
+## Create a plotgardener page
+pageCreate(width = 7, height = 4.25, default.units = "inches")
+## Text section label
+plotText(label = "36", fontsize = 12,
+         x = 0.5, y = 1, just = c("left", "top"), default.units = "inches")
+## Set genomic and dimension parameters in a `params` object
+params_c <- pgParams(chrom = chr[i], chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 0.75, width = 1.5, default.units = "inches")
+## Get matrix
+dmso_mat = readHic("./matrix_for_plot/B36_DMSO.hic", chrom = chr[i], chromstart = start[i], chromend = end[i], assembly = "hg38",
+  resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dmso <- plotHicTriangle(data = "./matrix_for_plot/B36_DMSO.hic", params = params_c,
+                          zrange = c(0, quantile(dmso_mat$counts, probs = cut_val)), resolution = 10000, flip = TRUE,
+                          y = 2.5, height = 0.75, just = c("left", "bottom"))
+## Set genomic and dimension parameters in a `params` object
+params_d <- pgParams(chrom = chr[i], chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 2.25, width = 1.5, default.units = "inches")
+## Get matrix
+dp_mat = readHic("./matrix_for_plot/B36_DP.hic", chrom = chr[i], chromstart = start[i], chromend = end[i], assembly = "hg38",
+                   resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dp <- plotHicTriangle(data = "./matrix_for_plot/B36_DP.hic", params = params_d,
+                           zrange = c(0, quantile(dp_mat$counts, probs = cut_val)), resolution = 10000,
+                           y = 1.75, height = 0.75, just = c("right", "bottom"))
+## Add X scale
+annoGenomeLabel(
+  plot = hic_dmso, fontsize = 4,
+  x = 0.75, y = 2.5, width = 2.5, height = 0.25, default.units = "inches"
+)
+
+
+## Text section label
+plotText(label = "49", fontsize = 12,
+         x = 2.5, y = 1, just = c("left", "top"), default.units = "inches")
+## Set genomic and dimension parameters in a `params` object
+params_c <- pgParams(chrom = chr[i], chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 2.75, width = 1.5, default.units = "inches")
+## Get matrix
+dmso_mat = readHic("./matrix_for_plot/B49_DMSO.hic", chrom = chr[i], chromstart = start[i], chromend = end[i], assembly = "hg38",
+                   resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dmso <- plotHicTriangle(data = "./matrix_for_plot/B49_DMSO.hic", params = params_c,
+                            zrange = c(0, quantile(dmso_mat$counts, probs = cut_val)), resolution = 10000, flip = TRUE,
+                            y = 2.5, height = 0.75, just = c("left", "bottom"))
+## Set genomic and dimension parameters in a `params` object
+params_d <- pgParams(chrom = chr[i], chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 4.25, width = 1.5, default.units = "inches")
+## Get matrix
+dp_mat = readHic("./matrix_for_plot/B49_DP.hic", chrom = chr[i], chromstart = start[i], chromend = end[i], assembly = "hg38",
+                 resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dp <- plotHicTriangle(data = "./matrix_for_plot/B49_DP.hic", params = params_d,
+                          zrange = c(0, quantile(dp_mat$counts, probs = cut_val)), resolution = 10000,
+                          y = 1.75, height = 0.75, just = c("right", "bottom"))
+## Add X scale
+annoGenomeLabel(
+  plot = hic_dmso, fontsize = 4,
+  x = 2.75, y = 2.5, width = 2.5, height = 0.25, default.units = "inches"
+)
+
+
+## Text section label
+plotText(label = "66", fontsize = 12,
+         x = 4.5, y = 1, just = c("left", "top"), default.units = "inches")
+## Set genomic and dimension parameters in a `params` object
+params_c <- pgParams(chrom = chr[i], chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 4.75, width = 1.5, default.units = "inches")
+## Get matrix
+dmso_mat = readHic("./matrix_for_plot/B66_DMSO.hic", chrom = chr[i], chromstart = start[i], chromend = end[i], assembly = "hg38",
+                   resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dmso <- plotHicTriangle(data = "./matrix_for_plot/B66_DMSO.hic", params = params_c,
+                            zrange = c(0, quantile(dmso_mat$counts, probs = cut_val)), resolution = 10000, flip = TRUE,
+                            y = 2.5, height = 0.75, just = c("left", "bottom"))
+## Set genomic and dimension parameters in a `params` object
+params_d <- pgParams(chrom = chr[i], chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 6.25, width = 1.5, default.units = "inches")
+## Get matrix
+dp_mat = readHic("./matrix_for_plot/B66_DP.hic", chrom = chr[i], chromstart = start[i], chromend = end[i], assembly = "hg38",
+                 resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dp <- plotHicTriangle(data = "./matrix_for_plot/B66_DP.hic", params = params_d,
+                          zrange = c(0, quantile(dp_mat$counts, probs = cut_val)), resolution = 10000,
+                          y = 1.75, height = 0.75, just = c("right", "bottom"))
+## Add X scale
+annoGenomeLabel(
+  plot = hic_dmso, fontsize = 4,
+  x = 4.75, y = 2.5, width = 2.5, height = 0.25, default.units = "inches"
+)
+## Hide page guides
+pageGuideHide()
+dev.off()
+}
+
+```
+
+```{r}
+WorkingDirectory <- "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/2_TAD/3DNetMod/diff_bound/"
+setwd(WorkingDirectory)
+options(scipen = 999)
+
+###Selected example with CTCF tracks
+chr = sorted_epi_weak$chr
+bound = sorted_epi_weak$start
+start = ifelse(sorted_epi_weak$start - 1000000 >=0, sorted_epi_weak$start - 1000000, 0)
+end = sorted_epi_weak$start + 1000000
+cut_val = 0.80
+cut_val1 = 0.7
+
+i=131
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/weak_tad_selected_example_with_ctcf.pdf"),width = 7, height = 6)
+## Create a plotgardener page
+pageCreate(width = 7, height = 6, default.units = "inches")
+## Text section label
+plotText(label = "B36", fontsize = 12,
+         x = 0.5, y = 1, just = c("left", "top"), default.units = "inches")
+## Set genomic and dimension parameters in a `params` object
+params_c <- pgParams(chrom = chr[i], chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 0.75, width = 1.5, default.units = "inches")
+## Get matrix
+dmso_mat = readHic("./matrix_for_plot/B36_DMSO.hic", chrom = chr[i], chromstart = start[i], chromend = end[i], assembly = "hg38",
+                   resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dmso <- plotHicTriangle(data = "./matrix_for_plot/B36_DMSO.hic", params = params_c,
+                            zrange = c(0, quantile(dmso_mat$counts, probs = cut_val)), resolution = 10000, flip = TRUE,
+                            y = 2.5, height = 0.75, just = c("left", "bottom"))
+## Set genomic and dimension parameters in a `params` object
+params_d <- pgParams(chrom = chr[i], chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 2.25, width = 1.5, default.units = "inches")
+## Get matrix
+dp_mat = readHic("./matrix_for_plot/B36_DP.hic", chrom = chr[i], chromstart = start[i], chromend = end[i], assembly = "hg38",
+                 resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dp <- plotHicTriangle(data = "./matrix_for_plot/B36_DP.hic", params = params_d,
+                          zrange = c(0, quantile(dp_mat$counts, probs = cut_val)), resolution = 10000,
+                          y = 1.75, height = 0.75, just = c("right", "bottom"))
+## Add X scale
+plotSignal(data = "/scratch/mmoore/Epitherapy3D/data/cutrun_all_samples/bigwig_normalized/RLE/Trimmed_WangT_B36-DMSO1-CTCF-cutrun_R1.fastq_nochrM_nodup_qffilter.bw",
+           binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr[i]), chromstart = start[i], chromend = end[i], 
+           assembly = "hg38", linecolor = "red", fill = NA, ymax = 1, range = c(0,150), scale = TRUE, label = "NULL", bg = NA, baseline = TRUE, 
+           baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 0.75, y = 2.5, width = 1.5, height = 0.5, 
+           just = c("left", "top"), default.units = "inches", draw = TRUE)
+plotSignal(data = "/scratch/mmoore/Epitherapy3D/data/cutrun_all_samples/bigwig_normalized/RLE/Trimmed_WangT_B36-DMSO2-CTCF-cutrun_R1.fastq_nochrM_nodup_qffilter.bw",
+           binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr[i]), chromstart = start[i], chromend = end[i], 
+           assembly = "hg38", linecolor = "red", fill = NA, ymax = 1, range = c(0,150), scale = TRUE, label = NULL, bg = NA, baseline = TRUE, 
+           baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 0.75, y = 3, width = 1.5, height = 0.5, 
+           just = c("left", "top"), default.units = "inches", draw = TRUE)
+plotSignal(data = "/scratch/mmoore/Epitherapy3D/data/cutrun_all_samples/bigwig_normalized/RLE/Trimmed_WangT_B36-DP1-CTCF-cutrun_R1.fastq_nochrM_nodup_qffilter.bw",
+           binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr[i]), chromstart = start[i], chromend = end[i], 
+           assembly = "hg38", linecolor = "#37a7db", fill = NA, ymax = 1, range = c(0,150), scale = TRUE, label = NULL, bg = NA, baseline = TRUE, 
+           baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 0.75, y = 3.5, width = 1.5, height = 0.5, 
+           just = c("left", "top"), default.units = "inches", draw = TRUE)
+plotSignal(data = "/scratch/mmoore/Epitherapy3D/data/cutrun_all_samples/bigwig_normalized/RLE/Trimmed_WangT_B36-DP2-CTCF-cutrun_R1.fastq_nochrM_nodup_qffilter.bw",
+           binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr[i]), chromstart = start[i], chromend = end[i], 
+           assembly = "hg38", linecolor = "#37a7db", fill = NA, ymax = 1, range = c(0,150), scale = TRUE, label = NULL, bg = NA, baseline = TRUE, 
+           baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 0.75, y = 4, width = 1.5, height = 0.5, 
+           just = c("left", "top"), default.units = "inches", draw = TRUE)
+
+params_e <- pgParams(chrom = paste0("chr",chr[i]), chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 0.75, width = 1.5, default.units = "inches")
+genes_gm <- plotGenes(params = params_e, stroke = 1, fontsize = 6,
+                      strandLabels = FALSE,
+                      y = 4.5, height = 0.4)
+## Annotate genome label
+annoGenomeLabel(plot = genes_gm, params = params_e, 
+                scale = "Kb", fontsize = 6,
+                y = 5)
+
+
+## Text section label
+plotText(label = "B49", fontsize = 12,
+         x = 2.5, y = 1, just = c("left", "top"), default.units = "inches")
+## Set genomic and dimension parameters in a `params` object
+params_c <- pgParams(chrom = chr[i], chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 2.75, width = 1.5, default.units = "inches")
+## Get matrix
+dmso_mat = readHic("./matrix_for_plot/B49_DMSO.hic", chrom = chr[i], chromstart = start[i], chromend = end[i], assembly = "hg38",
+                   resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dmso <- plotHicTriangle(data = "./matrix_for_plot/B49_DMSO.hic", params = params_c,
+                            zrange = c(0, quantile(dmso_mat$counts, probs = cut_val1)), resolution = 10000, flip = TRUE,
+                            y = 2.5, height = 0.75, just = c("left", "bottom"))
+## Set genomic and dimension parameters in a `params` object
+params_d <- pgParams(chrom = chr[i], chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 4.25, width = 1.5, default.units = "inches")
+## Get matrix
+dp_mat = readHic("./matrix_for_plot/B49_DP.hic", chrom = chr[i], chromstart = start[i], chromend = end[i], assembly = "hg38",
+                 resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dp <- plotHicTriangle(data = "./matrix_for_plot/B49_DP.hic", params = params_d,
+                          zrange = c(0, quantile(dp_mat$counts, probs = cut_val1)), resolution = 10000,
+                          y = 1.75, height = 0.75, just = c("right", "bottom"))
+## Add X scale
+plotSignal(data = "/scratch/mmoore/Epitherapy3D/data/cutrun_all_samples/bigwig_normalized/RLE/Trimmed_WangT_B49-DMSO1-CTCF-cutrun_R1.fastq_nochrM_nodup_qffilter.bw",
+           binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr[i]), chromstart = start[i], chromend = end[i], 
+           assembly = "hg38", linecolor = "red", fill = NA, ymax = 1, range = c(0,75), scale = TRUE, label = NULL, bg = NA, baseline = TRUE, 
+           baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 2.75, y = 2.5, width = 1.5, height = 0.5, 
+           just = c("left", "top"), default.units = "inches", draw = TRUE)
+plotSignal(data = "/scratch/mmoore/Epitherapy3D/data/cutrun_all_samples/bigwig_normalized/RLE/Trimmed_WangT_B49-DMSO2-CTCF-cutrun_R1.fastq_nochrM_nodup_qffilter.bw",
+           binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr[i]), chromstart = start[i], chromend = end[i], 
+           assembly = "hg38", linecolor = "red", fill = NA, ymax = 1, range = c(0,75), scale = TRUE, label = NULL, bg = NA, baseline = TRUE, 
+           baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 2.75, y = 3, width = 1.5, height = 0.5, 
+           just = c("left", "top"), default.units = "inches", draw = TRUE)
+plotSignal(data = "/scratch/mmoore/Epitherapy3D/data/cutrun_all_samples/bigwig_normalized/RLE/Trimmed_WangT_B49-DP1-CTCF-cutrun_R1.fastq_nochrM_nodup_qffilter.bw",
+           binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr[i]), chromstart = start[i], chromend = end[i], 
+           assembly = "hg38", linecolor = "#37a7db", fill = NA, ymax = 1, range = c(0,75), scale = TRUE, label = NULL, bg = NA, baseline = TRUE, 
+           baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 2.75, y = 3.5, width = 1.5, height = 0.5, 
+           just = c("left", "top"), default.units = "inches", draw = TRUE)
+plotSignal(data = "/scratch/mmoore/Epitherapy3D/data/cutrun_all_samples/bigwig_normalized/RLE/Trimmed_WangT_B49-DP2-CTCF-cutrun_R1.fastq_nochrM_nodup_qffilter.bw",
+           binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr[i]), chromstart = start[i], chromend = end[i], 
+           assembly = "hg38", linecolor = "#37a7db", fill = NA, ymax = 1, range = c(0,75), scale = TRUE, label = NULL, bg = NA, baseline = TRUE, 
+           baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 2.75, y = 4, width = 1.5, height = 0.5, 
+           just = c("left", "top"), default.units = "inches", draw = TRUE)
+
+params_e <- pgParams(chrom = paste0("chr",chr[i]), chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 2.75, width = 1.5, default.units = "inches")
+genes_gm <- plotGenes(params = params_e, stroke = 1, fontsize = 6,
+                      strandLabels = FALSE,
+                      y = 4.5, height = 0.4)
+## Annotate genome label
+annoGenomeLabel(plot = genes_gm, params = params_e, 
+                scale = "Kb", fontsize = 6,
+                y = 5)
+
+## Text section label
+plotText(label = "B66", fontsize = 12,
+         x = 4.5, y = 1, just = c("left", "top"), default.units = "inches")
+## Set genomic and dimension parameters in a `params` object
+params_c <- pgParams(chrom = chr[i], chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 4.75, width = 1.5, default.units = "inches")
+## Get matrix
+dmso_mat = readHic("./matrix_for_plot/B66_DMSO.hic", chrom = chr[i], chromstart = start[i], chromend = end[i], assembly = "hg38",
+                   resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dmso <- plotHicTriangle(data = "./matrix_for_plot/B66_DMSO.hic", params = params_c,
+                            zrange = c(0, quantile(dmso_mat$counts, probs = cut_val)), resolution = 10000, flip = TRUE,
+                            y = 2.5, height = 0.75, just = c("left", "bottom"))
+## Set genomic and dimension parameters in a `params` object
+params_d <- pgParams(chrom = chr[i], chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 6.25, width = 1.5, default.units = "inches")
+## Get matrix
+dp_mat = readHic("./matrix_for_plot/B66_DP.hic", chrom = chr[i], chromstart = start[i], chromend = end[i], assembly = "hg38",
+                 resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dp <- plotHicTriangle(data = "./matrix_for_plot/B66_DP.hic", params = params_d,
+                          zrange = c(0, quantile(dp_mat$counts, probs = cut_val)), resolution = 10000,
+                          y = 1.75, height = 0.75, just = c("right", "bottom"))
+## Add X scale
+plotSignal(data = "/scratch/mmoore/Epitherapy3D/data/cutrun_all_samples/bigwig_normalized/RLE/Trimmed_WangT_B66-DMSO1-CTCF-cutrun_R1.fastq_nochrM_nodup_qffilter.bw",
+           binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr[i]), chromstart = start[i], chromend = end[i], 
+           assembly = "hg38", linecolor = "red", fill = NA, ymax = 1, range = c(0,100), scale = TRUE, label = NULL, bg = NA, baseline = TRUE, 
+           baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 4.75, y = 2.5, width = 1.5, height = 0.5, 
+           just = c("left", "top"), default.units = "inches", draw = TRUE)
+plotSignal(data = "/scratch/mmoore/Epitherapy3D/data/cutrun_all_samples/bigwig_normalized/RLE/Trimmed_WangT_B66-DMSO2-CTCF-cutrun_R1.fastq_nochrM_nodup_qffilter.bw",
+           binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr[i]), chromstart = start[i], chromend = end[i], 
+           assembly = "hg38", linecolor = "red", fill = NA, ymax = 1, range = c(0,100), scale = TRUE, label = NULL, bg = NA, baseline = TRUE, 
+           baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 4.75, y = 3, width = 1.5, height = 0.5, 
+           just = c("left", "top"), default.units = "inches", draw = TRUE)
+plotSignal(data = "/scratch/mmoore/Epitherapy3D/data/cutrun_all_samples/bigwig_normalized/RLE/Trimmed_WangT_B66-DP1-CTCF-cutrun_R1.fastq_nochrM_nodup_qffilter.bw",
+           binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr[i]), chromstart = start[i], chromend = end[i], 
+           assembly = "hg38", linecolor = "#37a7db", fill = NA, ymax = 1, range = c(0,100), scale = TRUE, label = NULL, bg = NA, baseline = TRUE, 
+           baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 4.75, y = 3.5, width = 1.5, height = 0.5, 
+           just = c("left", "top"), default.units = "inches", draw = TRUE)
+plotSignal(data = "/scratch/mmoore/Epitherapy3D/data/cutrun_all_samples/bigwig_normalized/RLE/Trimmed_WangT_B66-DP2-CTCF-cutrun_R1.fastq_nochrM_nodup_qffilter.bw",
+           binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr[i]), chromstart = start[i], chromend = end[i], 
+           assembly = "hg38", linecolor = "#37a7db", fill = NA, ymax = 1, range = c(0,100), scale = TRUE, label = NULL, bg = NA, baseline = TRUE, 
+           baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 4.75, y = 4, width = 1.5, height = 0.5, 
+           just = c("left", "top"), default.units = "inches", draw = TRUE)
+
+params_e <- pgParams(chrom = paste0("chr",chr[i]), chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 4.75, width = 1.5, default.units = "inches")
+genes_gm <- plotGenes(params = params_e, stroke = 1, fontsize = 6,
+                      strandLabels = FALSE,
+                      y = 4.5, height = 0.4)
+## Annotate genome label
+annoGenomeLabel(plot = genes_gm, params = params_e, 
+                scale = "Kb", fontsize = 6,
+                y = 5)
+## Hide page guides
+pageGuideHide()
+dev.off()
+
+```
+
+```{r}
+WorkingDirectory <- "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/2_TAD/3DNetMod/diff_bound/"
+setwd(WorkingDirectory)
+options(scipen = 999)
+
+###Selected example with CTCF tracks
+chr = sorted_epi_weak$chr
+bound = sorted_epi_weak$start
+start = ifelse(sorted_epi_weak$start - 1000000 >=0, sorted_epi_weak$start - 1000000, 0)
+end = sorted_epi_weak$start + 1000000
+cut_val = 0.80
+cut_val1 = 0.7
+
+i=131
+
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/2_TAD/3DNetMod/diff_bound")
+tmp <- tempfile(fileext = ".png")
+png(tmp, width = 7, height = 6, units = "in", res = 600)
+pageCreate(width = 7, height = 6, default.units = "inches")
+## Add heatmap annotation
+plotText(label = "DP", fontsize = 10, x = 0.5, y = 1.25, just = c("left", "top"), default.units = "inches")
+plotText(label = "DMSO", fontsize = 10, x = 0.5, y = 2.25, just = c("left", "bottom"), default.units = "inches")
+## Text section label
+plotText(label = "B36", fontsize = 10, x = 1.5, y = 0.75, just = c("center", "center"), default.units = "inches")
+## Set genomic and dimension parameters in a `params` object
+params_c <- pgParams(chrom = chr[i], chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 0.75, width = 1.5, default.units = "inches")
+## Get matrix
+dmso_mat = readHic("./matrix_for_plot/B36_DMSO.hic", chrom = chr[i], chromstart = start[i], chromend = end[i], assembly = "hg38",
+                   resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dmso <- plotHicTriangle(data = "./matrix_for_plot/B36_DMSO.hic", params = params_c,
+                            zrange = c(0, quantile(dmso_mat$counts, probs = cut_val)), resolution = 10000, flip = TRUE,
+                            y = 2.5, height = 0.75, just = c("left", "bottom"))
+annoHeatmapLegend(plot = hic_dmso, x = 2.5, y = 1.25,width = 0.13, height = 1.2,just = c("right", "top"), fontcolor = "black")
+## Set genomic and dimension parameters in a `params` object
+params_d <- pgParams(chrom = chr[i], chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 2.25, width = 1.5, default.units = "inches")
+## Get matrix
+dp_mat = readHic("./matrix_for_plot/B36_DP.hic", chrom = chr[i], chromstart = start[i], chromend = end[i], assembly = "hg38",
+                 resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dp <- plotHicTriangle(data = "./matrix_for_plot/B36_DP.hic", params = params_d,
+                          zrange = c(0, quantile(dmso_mat$counts, probs = cut_val)), resolution = 10000,
+                          y = 1.75, height = 0.75, just = c("right", "bottom"))
+## Add line
+plotSegments(x0 = 1.5, y0 = 1, x1 = 1.5, y1 = 4, default.units = "inches", lty = 2, lwd = 1.5, col = "black")
+## Add CTCF bigwig
+dmso_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B36_DMSO_CTCF.bw",
+           binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr[i]), chromstart = start[i], chromend = end[i], 
+           assembly = "hg38", linecolor = "red", fill = NA, ymax = 1, range = c(0,172.5), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+           baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 0.75, y = 2.5, width = 1.5, height = 0.5, 
+           just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+
+dp_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B36_DP_CTCF.bw",
+           binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr[i]), chromstart = start[i], chromend = end[i], 
+           assembly = "hg38", linecolor = "#37a7db", fill = NA, ymax = 1, range = c(0,172.5), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+           baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 0.75, y = 3, width = 1.5, height = 0.5, 
+           just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+
+annoYaxis(plot = dmso_ctcf, at = c(0, 150), fontsize = 6)
+annoYaxis(plot = dp_ctcf, at = c(0, 150), fontsize = 6)
+plotText(label = "DMSO\nCTCF", x = 0.5, y = 2.8, fontsize = 10, just = c("center", "center"))
+plotText(label = "DP\nCTCF", x = 0.5, y = 3.3, fontsize = 10, just = c("center", "center"))
+plotText(label = "Genes", x = 0.5, y = 3.75, fontsize = 10, just = c("center", "center"))
+
+
+dmso_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B36_DMSO_CTCF.bw",
+                       binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr[i]), chromstart = 13710000, chromend = 13750000, 
+                       assembly = "hg38", linecolor = "red", fill = "red", ymax = 1, range = c(0,50), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                       baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 0.75, y = 4.5, width = 1.5, height = 0.5, 
+                       just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+
+dp_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B36_DP_CTCF.bw",
+                     binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr[i]), chromstart = 13710000, chromend = 13750000, 
+                     assembly = "hg38", linecolor = "#37a7db", fill = "#37a7db", ymax = 1, range = c(0,50), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                     baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 0.75, y = 5, width = 1.5, height = 0.5, 
+                     just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+annoYaxis(plot = dmso_ctcf, at = c(0, 40), fontsize = 6)
+annoYaxis(plot = dp_ctcf, at = c(0, 40), fontsize = 6)
+## Add genes
+params_e <- pgParams(chrom = paste0("chr",chr[i]), chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 0.75, width = 1.5, default.units = "inches")
+genes_gm <- plotGenes(params = params_e, stroke = 1, fontsize = 6,
+                      strandLabels = FALSE,
+                      y = 3.5, height = 0.4)
+## Annotate genome label
+annoGenomeLabel(plot = genes_gm, params = params_e, 
+                scale = "Kb", fontsize = 6,
+                y = 4)
+params_g <- pgParams(chrom = "chr19", chromstart = 13710000, chromend = 13760000, 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 0.75, width = 1.5, default.units = "inches")
+plotGenomeLabel(params = params_g, 
+                scale = "Kb", fontsize = 6,
+                length = 1.5, y = 5.5)
+
+## Text section label
+plotText(label = "B49", fontsize = 10, x = 3.5, y = 0.75, just = c("center", "center"), default.units = "inches")
+## Set genomic and dimension parameters in a `params` object
+params_c <- pgParams(chrom = chr[i], chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 2.75, width = 1.5, default.units = "inches")
+## Get matrix
+dmso_mat = readHic("./matrix_for_plot/B49_DMSO.hic", chrom = chr[i], chromstart = start[i], chromend = end[i], assembly = "hg38",
+                   resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dmso <- plotHicTriangle(data = "./matrix_for_plot/B49_DMSO.hic", params = params_c,
+                            zrange = c(0, quantile(dmso_mat$counts, probs = cut_val1)), resolution = 10000, flip = TRUE,
+                            y = 2.5, height = 0.75, just = c("left", "bottom"))
+annoHeatmapLegend(plot = hic_dmso, x = 4.5, y = 1.25,width = 0.13, height = 1.2,just = c("right", "top"), fontcolor = "black")
+## Set genomic and dimension parameters in a `params` object
+params_d <- pgParams(chrom = chr[i], chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 4.25, width = 1.5, default.units = "inches")
+## Get matrix
+dp_mat = readHic("./matrix_for_plot/B49_DP.hic", chrom = chr[i], chromstart = start[i], chromend = end[i], assembly = "hg38",
+                 resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dp <- plotHicTriangle(data = "./matrix_for_plot/B49_DP.hic", params = params_d,
+                          zrange = c(0, quantile(dmso_mat$counts, probs = cut_val1)), resolution = 10000,
+                          y = 1.75, height = 0.75, just = c("right", "bottom"))
+## Add line
+plotSegments(x0 = 3.5, y0 = 1, x1 = 3.5, y1 = 4, default.units = "inches", lty = 2, lwd = 1.5, col = "black")
+## Add CTCF bigwig
+dmso_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B49_DMSO_CTCF.bw",
+                       binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr[i]), chromstart = start[i], chromend = end[i], 
+                       assembly = "hg38", linecolor = "red", fill = NA, ymax = 1, range = c(0,86.25), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                       baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 2.75, y = 2.5, width = 1.5, height = 0.5, 
+                       just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+
+dp_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B49_DP_CTCF.bw",
+                     binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr[i]), chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", linecolor = "#37a7db", fill = NA, ymax = 1, range = c(0,86.25), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                     baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 2.75, y = 3, width = 1.5, height = 0.5, 
+                     just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+
+annoYaxis(plot = dmso_ctcf, at = c(0, 75), fontsize = 6)
+annoYaxis(plot = dp_ctcf, at = c(0, 75), fontsize = 6)
+#plotText(label = "DMSO\nCTCF", x = 2.5, y = 2.75, fontsize = 6, just = c("center", "center"))
+#plotText(label = "DP\nCTCF", x = 2.5, y = 3.25, fontsize = 6, just = c("center", "center"))
+
+dmso_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B49_DMSO_CTCF.bw",
+                       binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr[i]), chromstart = 13710000, chromend = 13750000, 
+                       assembly = "hg38", linecolor = "red", fill = "red", ymax = 1, range = c(0,25), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                       baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 2.75, y = 4.5, width = 1.5, height = 0.5, 
+                       just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+
+dp_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B49_DP_CTCF.bw",
+                     binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr[i]), chromstart = 13710000, chromend = 13750000, 
+                     assembly = "hg38", linecolor = "#37a7db", fill = "#37a7db", ymax = 1, range = c(0,25), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                     baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 2.75, y = 5, width = 1.5, height = 0.5, 
+                     just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+annoYaxis(plot = dmso_ctcf, at = c(0, 20), fontsize = 6)
+annoYaxis(plot = dp_ctcf, at = c(0, 20), fontsize = 6)
+## Add genes
+params_e <- pgParams(chrom = paste0("chr",chr[i]), chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 2.75, width = 1.5, default.units = "inches")
+genes_gm <- plotGenes(params = params_e, stroke = 1, fontsize = 6,
+                      strandLabels = FALSE,
+                      y = 3.5, height = 0.4)
+## Annotate genome label
+annoGenomeLabel(plot = genes_gm, params = params_e, 
+                scale = "Kb", fontsize = 6,
+                y = 4)
+params_g <- pgParams(chrom = "chr19", chromstart = 13710000, chromend = 13760000, 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 2.75, width = 1.5, default.units = "inches")
+plotGenomeLabel(params = params_g,  
+                scale = "Kb", fontsize = 6,
+                length = 1.5, y = 5.5)
+
+## Text section label
+plotText(label = "B66", fontsize = 10, x = 5.5, y = 0.75, just = c("center", "center"), default.units = "inches")
+## Set genomic and dimension parameters in a `params` object
+params_c <- pgParams(chrom = chr[i], chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 4.75, width = 1.5, default.units = "inches")
+## Get matrix
+dmso_mat = readHic("./matrix_for_plot/B66_DMSO.hic", chrom = chr[i], chromstart = start[i], chromend = end[i], assembly = "hg38",
+                   resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dmso <- plotHicTriangle(data = "./matrix_for_plot/B66_DMSO.hic", params = params_c,
+                            zrange = c(0, quantile(dmso_mat$counts, probs = cut_val)), resolution = 10000, flip = TRUE,
+                            y = 2.5, height = 0.75, just = c("left", "bottom"))
+annoHeatmapLegend(plot = hic_dmso, x = 6.5, y = 1.25,width = 0.13, height = 1.2,just = c("right", "top"), fontcolor = "black")
+## Set genomic and dimension parameters in a `params` object
+params_d <- pgParams(chrom = chr[i], chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 6.25, width = 1.5, default.units = "inches")
+## Get matrix
+dp_mat = readHic("./matrix_for_plot/B66_DP.hic", chrom = chr[i], chromstart = start[i], chromend = end[i], assembly = "hg38",
+                 resolution = 10000,res_scale = "BP",norm = "VC_SQRT",matrix = "observed",)
+## Plot Hi-C triangle
+hic_dp <- plotHicTriangle(data = "./matrix_for_plot/B66_DP.hic", params = params_d,
+                          zrange = c(0, quantile(dmso_mat$counts, probs = cut_val)), resolution = 10000,
+                          y = 1.75, height = 0.75, just = c("right", "bottom"))
+
+## Add line
+plotSegments(x0 = 5.5, y0 = 1, x1 = 5.5, y1 = 4, default.units = "inches", lty = 2, lwd = 1.5, col = "black")
+## Add CTCF bigwig
+dmso_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B66_DMSO_CTCF.bw",
+                       binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr[i]), chromstart = start[i], chromend = end[i], 
+                       assembly = "hg38", linecolor = "red", fill = NA, ymax = 1, range = c(0,115), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                       baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 4.75, y = 2.5, width = 1.5, height = 0.5, 
+                       just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+
+dp_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B66_DP_CTCF.bw",
+                     binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr[i]), chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", linecolor = "#37a7db", fill = NA, ymax = 1, range = c(0,115), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                     baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 4.75, y = 3, width = 1.5, height = 0.5, 
+                     just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+
+annoYaxis(plot = dmso_ctcf, at = c(0, 100), fontsize = 6)
+annoYaxis(plot = dp_ctcf, at = c(0, 100), fontsize = 6)
+## Add zoom
+dmso_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B66_DMSO_CTCF.bw",
+                       binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr[i]), chromstart = 13710000, chromend = 13750000, 
+                       assembly = "hg38", linecolor = "red", fill = "red", ymax = 1, range = c(0,25), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                       baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 4.75, y = 4.5, width = 1.5, height = 0.5, 
+                       just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+
+dp_ctcf = plotSignal(data = "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/cutrun/0_norm_bw/B66_DP_CTCF.bw",
+                     binSize = NA, binCap = TRUE, negData = FALSE, chrom = paste0("chr",chr[i]), chromstart = 13710000, chromend = 13750000, 
+                     assembly = "hg38", linecolor = "#37a7db", fill = "#37a7db", ymax = 1, range = c(0,25), scale = FALSE, label = NULL, bg = NA, baseline = TRUE, 
+                     baseline.color = "grey", baseline.lwd = 1, orientation = "h", x = 4.75, y = 5, width = 1.5, height = 0.5, 
+                     just = c("left", "top"), default.units = "inches", draw = TRUE, fontsize = 6)
+annoYaxis(plot = dmso_ctcf, at = c(0, 20), fontsize = 6)
+annoYaxis(plot = dp_ctcf, at = c(0, 20), fontsize = 6)
+## Add genes
+params_e <- pgParams(chrom = paste0("chr",chr[i]), chromstart = start[i], chromend = end[i], 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 4.75, width = 1.5, default.units = "inches")
+genes_gm <- plotGenes(params = params_e, stroke = 1, fontsize = 6,
+                      strandLabels = FALSE,
+                      y = 3.5, height = 0.4)
+## Annotate genome label
+annoGenomeLabel(plot = genes_gm, params = params_e, 
+                scale = "Kb", fontsize = 6,
+                y = 4)
+params_g <- pgParams(chrom = "chr19", chromstart = 13710000, chromend = 13760000, 
+                     assembly = "hg38", norm = "VC_SQRT",
+                     x = 4.75, width = 1.5, default.units = "inches")
+plotGenomeLabel(params = params_g, 
+                scale = "Kb", fontsize = 6,
+                length = 1.5, y = 5.5)
+## Add box around zoom
+plotRect(x = 1.5, y = 5, width = 1.5, height = 1, just = "center", default.units = "inches", linecolor = "black",
+  lwd = 1, lty = 1, fill = "pink", alpha = 0.25)
+plotSegments(x0 = 0.75, y0 = 5, x1 = 2.25, y1 = 5, default.units = "inches", lty = 1, lwd = 1.5, col = "black")
+
+plotRect(x = 3.5, y = 5, width = 1.5, height = 1, just = "center", default.units = "inches", linecolor = "black",
+         lwd = 1, lty = 1, fill = "pink", alpha = 0.25)
+plotSegments(x0 = 2.75, y0 = 5, x1 = 4.25, y1 = 5, default.units = "inches", lty = 1, lwd = 1.5, col = "black")
+
+plotRect(x = 5.5, y = 5, width = 1.5, height = 1, just = "center", default.units = "inches", linecolor = "black",
+         lwd = 1, lty = 1, fill = "pink", alpha = 0.25)
+plotSegments(x0 = 4.75, y0 = 5, x1 = 6.25, y1 = 5, default.units = "inches", lty = 1, lwd = 1.5, col = "black")
+
+plotRect(x = 1.5, y = 3.95, width = 0.1, height = 0.1, just = "center", default.units = "inches", linecolor = "black",
+         lwd = 1, lty = 1, fill = "pink", alpha = 0.5)
+plotSegments(x0 = 1.45, y0 = 4, x1 = 0.75, y1 = 4.5, default.units = "inches", lty = 1, lwd = 1.5, col = "black")
+plotSegments(x0 = 1.55, y0 = 4, x1 = 2.25, y1 = 4.5, default.units = "inches", lty = 1, lwd = 1.5, col = "black")
+plotRect(x = 1.5, y = 5, width = 0.375, height = 1, just = "center", default.units = "inches", linecolor = "black",
+         lwd = 1, lty = 2, fill = NA, alpha = 1)
+
+plotRect(x = 3.5, y = 3.95, width = 0.1, height = 0.1, just = "center", default.units = "inches", linecolor = "black",
+         lwd = 1, lty = 1, fill = "pink", alpha = 0.5)
+plotSegments(x0 = 3.45, y0 = 4, x1 = 2.75, y1 = 4.5, default.units = "inches", lty = 1, lwd = 1.5, col = "black")
+plotSegments(x0 = 3.55, y0 = 4, x1 = 4.25, y1 = 4.5, default.units = "inches", lty = 1, lwd = 1.5, col = "black")
+plotRect(x = 3.5, y = 5, width = 0.375, height = 1, just = "center", default.units = "inches", linecolor = "black",
+         lwd = 1, lty = 2, fill = NA, alpha = 1)
+
+plotRect(x = 5.5, y = 3.95, width = 0.1, height = 0.1, just = "center", default.units = "inches", linecolor = "black",
+         lwd = 1, lty = 1, fill = "pink", alpha = 0.5)
+plotSegments(x0 = 5.45, y0 = 4, x1 = 4.75, y1 = 4.5, default.units = "inches", lty = 1, lwd = 1.5, col = "black")
+plotSegments(x0 = 5.55, y0 = 4, x1 = 6.25, y1 = 4.5, default.units = "inches", lty = 1, lwd = 1.5, col = "black")
+plotRect(x = 5.5, y = 5, width = 0.375, height = 1, just = "center", default.units = "inches", linecolor = "black",
+         lwd = 1, lty = 2, fill = NA, alpha = 1)
+
+## Hide page guides
+pageGuideHide()
+dev.off()
+
+p_img <- image_read(tmp)
+p_img_cropped <- image_trim(p_img)
+p_gg <- ggplot() +
+  annotation_raster(p_img_cropped, xmin = 0, xmax = 1, ymin = 0, ymax = 1) +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), clip = "on") +
+  scale_x_continuous(breaks = NULL, expand = c(0, 0)) +
+  scale_y_continuous(breaks = NULL, expand = c(0, 0)) +
+  theme_void() +
+  theme(
+    plot.margin    = margin(0, 0, 0, 0),
+    axis.text      = element_blank(),
+    axis.ticks     = element_blank(),
+    axis.title     = element_blank(),
+    panel.border   = element_blank(),
+    panel.background = element_blank()
+  )
+
+Fig_2F = p_gg
+
+```
+
+```{r}
+WorkingDirectory <- "/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/2_TAD/3DNetMod/diff_bound/"
+setwd(WorkingDirectory)
+options(scipen = 999)
+
+#RNA overlap, average FC over TADs
+files=list.files("7_TADs_RNAoverlap/", pattern = "shrinkage_DEGs_")
+TAD_rna=data.frame()
+for (i in 1:length(files)) {
+  temp=read.table(paste0("7_TADs_RNAoverlap/",files[[i]]))
+  temp$cell = strsplit(files[[i]],"_")[[1]][1]
+  temp$anno=strsplit(files[[i]],"_")[[1]][5]
+  TAD_rna=rbind(TAD_rna,temp)
+}
+
+TAD_rna_sig=TAD_rna[,c(1:3,8,10,13,15,16)] %>% unique()
+#TAD_rna_sig=TAD_rna_sig[TAD_rna_sig$V13 < 0.05 & abs(TAD_rna_sig$V10)>=1,] %>% unique()
+med=median(TAD_rna_sig[,"V10"])
+#TAD_rna_sig$V33 = TAD_rna_sig$V33 - med
+TAD_rna_sig <- TAD_rna_sig %>% group_by(V1,V2,V3,cell,anno) %>%
+  dplyr::summarise(across(c(V10), mean))
+
+stat.test <- TAD_rna_sig %>%
+  group_by(cell) %>%
+  t_test(V10 ~ anno) %>%
+  #adjust_pvalue(method = "bonferroni") %>%
+  add_significance() %>% add_xy_position(fun = "max", x = "anno", group="cell")
+stat.test
+
+p = ggplot(TAD_rna_sig, aes(x = anno, y = V10, fill = cell)) + geom_boxplot(outliers = FALSE) + stat_pvalue_manual(stat.test[stat.test$group1=="notdynamic",], label = "p.adj.signif", y.position = 3.5, size = 2, remove.bracket = TRUE, hide.ns = TRUE) + scale_fill_brewer(palette = "Set2") + theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black")) + xlab("Boundary Annotation") + ylab("RNA log2FoldChange (DP/DMSO)") + geom_hline(yintercept=0, linetype = "dashed") + coord_cartesian(ylim = c(-2, 4))
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/tad_FC_rna.pdf"))
+print(p)
+dev.off()
+
+TAD_rna_sig=TAD_rna[,c(1:3,8,10,13,15,16)] %>% unique()
+TAD_rna_sig=TAD_rna_sig[TAD_rna_sig$V13 < 0.05 & abs(TAD_rna_sig$V10)>=1,] %>% unique()
+
+for (i in c("B36","B49","B66")) {
+  TAD_rna_sig_sorted <- TAD_rna_sig[order(TAD_rna_sig$V10, decreasing = TRUE), ] %>% unique()
+  TAD_rna_sig_sorted = TAD_rna_sig_sorted[(TAD_rna_sig_sorted$anno!="notdynamic") & TAD_rna_sig_sorted$cell==i & abs(TAD_rna_sig_sorted$V10) > 1,4:5] %>% unique()
+  
+  yy <- enrichGO(TAD_rna_sig_sorted$V8, 'org.Hs.eg.db', keyType = "SYMBOL", ont="ALL", pvalueCutoff=0.05, pAdjustMethod = "BH")
+  p = dotplot(yy, showCategory=15, font.size = 8)
+  
+  pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/",i,"tad_switch_go.pdf"))
+  print(p)
+  dev.off()
+
+  #png(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/",i,"tad_switch_go.png"))
+  #print(p)
+  #dev.off()
+}
+
+TAD_rna_sig=TAD_rna[,c(1:3,8,10,13,15,16)] %>% unique()
+ for (i in c("B36","B49","B66")) {
+   TAD_rna_sig_sorted <- TAD_rna_sig[order(TAD_rna_sig$V10, decreasing = TRUE), ] %>% unique()
+   TAD_rna_sig_sorted = TAD_rna_sig_sorted[(TAD_rna_sig_sorted$anno!="notdynamic") & TAD_rna_sig_sorted$cell==i,4:5] %>% unique()
+   
+   if (i=="B36") {
+     TAD_RNA_genes = TAD_rna_sig_sorted
+   } else {
+     TAD_RNA_genes = merge(TAD_RNA_genes,TAD_rna_sig_sorted, by.x="V8", by.y="V8")
+   }
+ }
+colnames(TAD_RNA_genes) = c("gene","B36","B49","B66")
+
+# we want the log2 fold change 
+B36_orig_gene_list <- TAD_RNA_genes$B36
+B49_orig_gene_list <- TAD_RNA_genes$B49
+B66_orig_gene_list <- TAD_RNA_genes$B66
+# name the vector
+names(B36_orig_gene_list) <- TAD_RNA_genes$gene
+names(B49_orig_gene_list) <- TAD_RNA_genes$gene
+names(B66_orig_gene_list) <- TAD_RNA_genes$gene
+# omit any NA values 
+B36_gene_list<-na.omit(B36_orig_gene_list)
+B49_gene_list<-na.omit(B49_orig_gene_list)
+B66_gene_list<-na.omit(B66_orig_gene_list)
+# sort the list in decreasing order (required for clusterProfiler)
+B36_gene_list = sort(B36_gene_list, decreasing = TRUE)
+B49_gene_list = sort(B49_gene_list, decreasing = TRUE)
+B66_gene_list = sort(B66_gene_list, decreasing = TRUE)
+
+h_df <- msigdbr(species = "Homo sapiens", category = "H") %>% dplyr::select(gs_name, gene_symbol)
+gsea_B36 <- GSEA(geneList = B36_gene_list, TERM2GENE = h_df, nPermSimple = 100000)
+gsea_B49 <- GSEA(geneList = B49_gene_list, TERM2GENE = h_df, nPermSimple = 100000)
+gsea_B66 <- GSEA(geneList = B66_gene_list, TERM2GENE = h_df, nPermSimple = 100000)
+
+merged_gsea = merge_result(list(B36=gsea_B36,B49=gsea_B49,B66=gsea_B66))
+p = dotplot(merged_gsea, showCategory=15, split=".sign", font.size = 10) + theme(legend.text=element_text(size=5)) + facet_grid(.~.sign)
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/tad_merged_gsea_rna.pdf"))
+print(p)
+dev.off()
+
+Fig_2G = p
+
+```
+
+```{r}
+#Fig2
+layout <- "A#CCCCCCC##EEEEJJJJ##
+           A#CCCCCCC##FFFFKKKK##
+           A#CCCCCCCDDGGGGLLLLOO
+           A#CCCCCCC##HHHHMMMM##
+           B#CCCCCCC##IIIINNNN##
+           PPPPRRRRRRRRRRRSSSSSS
+           PPPPRRRRRRRRRRRSSSSSS
+           QQQQRRRRRRRRRRRSSSSSS
+           QQQQRRRRRRRRRRRSSSSSS
+           "
+           
+Fig2B1=plots[["./5_aggregate_boundaries/dynamic_weakened_top50_B36_DMSO_minus_DP_agg_10kb_VC_SQRT.pdf"]]
+Fig2B2=plots[["./5_aggregate_boundaries/dynamic_weakened_top50_B49_DMSO_minus_DP_agg_10kb_VC_SQRT.pdf"]]
+Fig2B3=plots[["./5_aggregate_boundaries/dynamic_weakened_top50_B66_DMSO_minus_DP_agg_10kb_VC_SQRT.pdf"]]
+Fig2B4=plots[["./5_aggregate_boundaries/dynamic_weakened_top50_NHA_DMSO_minus_DP_agg_10kb_VC_SQRT.pdf"]]
+Fig2B5=plots[["./5_aggregate_boundaries/dynamic_weakened_top50_qNHA_DMSO_minus_DP_agg_10kb_VC_SQRT.pdf"]]
+Fig2C1=plots[["./5_aggregate_boundaries/dynamic_strengthened_top50_B36_DMSO_minus_DP_agg_10kb_VC_SQRT.pdf"]]
+Fig2C2=plots[["./5_aggregate_boundaries/dynamic_strengthened_top50_B49_DMSO_minus_DP_agg_10kb_VC_SQRT.pdf"]]
+Fig2C3=plots[["./5_aggregate_boundaries/dynamic_strengthened_top50_B66_DMSO_minus_DP_agg_10kb_VC_SQRT.pdf"]]
+Fig2C4=plots[["./5_aggregate_boundaries/dynamic_strengthened_top50_NHA_DMSO_minus_DP_agg_10kb_VC_SQRT.pdf"]]
+Fig2C5=plots[["./5_aggregate_boundaries/dynamic_strengthened_top50_qNHA_DMSO_minus_DP_agg_10kb_VC_SQRT.pdf"]]
+
+
+Fig2 <- wrap_plots(Fig2A1, Fig2A1_leg, as.grob(Fig_2A2), Fig_2A2_leg, Fig2B1, Fig2B2, Fig2B3, Fig2B4, Fig2B5,
+                   Fig2C1, Fig2C2, Fig2C3, Fig2C4, Fig2C5, Fig_2B_leg, Fig_2D, Fig_2E,Fig_2F, Fig_2G, design = layout) &
+    theme(plot.margin = margin(15, 15, 15, 15))
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/Full_Figure2.pdf"), width = 24, height = 24)
+print(Fig2)
+dev.off()
+
+#Supp Fig3
+layout <- "AAAAABBBBBEEEEE##
+           AAAAABBBBBEEEEE##
+           CCCCCDDDDDFFFFF##
+           CCCCCDDDDDFFFFF##
+           ############GGG##
+           ############HHH##
+           ############IIILL
+           ############JJJ##
+           ############KKK##
+           "
+           
+Supp_Fig3G1=plots[["./5_aggregate_boundaries/not_dynamic_B36_DMSO_minus_DP_agg_10kb_VC_SQRT.pdf"]]
+Supp_Fig3G2=plots[["./5_aggregate_boundaries/not_dynamic_B49_DMSO_minus_DP_agg_10kb_VC_SQRT.pdf"]]
+Supp_Fig3G3=plots[["./5_aggregate_boundaries/not_dynamic_B66_DMSO_minus_DP_agg_10kb_VC_SQRT.pdf"]]
+Supp_Fig3G4=plots[["./5_aggregate_boundaries/not_dynamic_NHA_DMSO_minus_DP_agg_10kb_VC_SQRT.pdf"]]
+Supp_Fig3G5=plots[["./5_aggregate_boundaries/not_dynamic_qNHA_DMSO_minus_DP_agg_10kb_VC_SQRT.pdf"]]
+
+
+Supp_Fig3 <- wrap_plots(Supp_3A, Supp_3B, Supp_3C, Supp_3D, Supp_3E, Supp_3F, Supp_Fig3G1, Supp_Fig3G2, Supp_Fig3G3,
+                   Supp_Fig3G4, Supp_Fig3G5, Fig_2B_leg, design = layout) &
+    theme(plot.margin = margin(15, 15, 15, 15))
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/Full_Supp_Figure3.pdf"), width = 24, height = 24)
+print(Supp_Fig3)
+dev.off()
+
+```
+
+```{r}
+#test = read.csv("/scratch/mmoore/Epitherapy3D/analysis/HiC/2_TAD/cremins_pipe/DI_overlap/4_dynamic_boundary/dynamic_sig_withDI_slop50kb_ctcf_uniq.bed", sep = "\t", header = FALSE)
+test = bound_ctcf[,c(21:23,21:23)]
+test$V22 = test$V22.1 - 5000
+test$V23 = test$V23.1 + 5000
+colnames(test) <- c("seqnames", "start", "end", "chr","peak_start","peak_end")
+gr <- test %>% mutate(region_name = str_c(seqnames, start, end, sep = ":")) %>% as_granges()
+B36_methylc <- list.files("/scratch/mmoore/Epitherapy3D/data/wgbs/methylcall/6_track_mergedCG", pattern = "Trimmed_WGBS_B36_", full.names = TRUE) %>% grep("_DMSO_|_DP_", ., value = TRUE) %>% grep("CG.methylC.gz$", ., value = TRUE)
+B49_methylc <- list.files("/scratch/mmoore/Epitherapy3D/data/wgbs/methylcall/6_track_mergedCG", pattern = "Trimmed_WGBS_B49_", full.names = TRUE) %>% grep("_DMSO_|_DP_", ., value = TRUE) %>% grep("CG.methylC.gz$", ., value = TRUE)
+B66_methylc <- list.files("/scratch/mmoore/Epitherapy3D/data/wgbs/methylcall/6_track_mergedCG", pattern = "Trimmed_WGBS_B66_", full.names = TRUE) %>% grep("_DMSO_|_DP_", ., value = TRUE) %>% grep(".CG.methylC.gz$", ., value = TRUE)
+#NHA_methylc <- list.files("/scratch/mmoore/Epitherapy3D/data/wgbs/methylcall/6_track_mergedCG", pattern = "Trimmed_WGBS_NHA_", full.names = TRUE) %>% grep("_DMSO_|_DP_", ., value = TRUE) %>% grep("CG.methylC.gz$", ., value = TRUE)
+#qNHA_methylc <- list.files("/scratch/mmoore/Epitherapy3D/data/wgbs/methylcall/6_track_mergedCG", pattern = "Trimmed_WGBS_qNHA_", full.names = TRUE) %>% grep("_DMSO_|_DP_", ., value = TRUE) %>% grep(".CG.methylC.gz$", ., value = TRUE)
+
+# Read in these files and filter for regions with greater than 5x coverage
+read_in_methlylation <- function(file_list){
+  #file_list <- HCT116_methylc
+  #file_names <- basename(file_list) %>% str_split_i(., "trimmed_", 2) %>% str_split_i(., ".CG.me*", 1)
+  file_names <- basename(file_list) %>% str_split_i(., ".CG.me*", 1)
+  read_in <- map(file_list, read_delim, col_names = c("seqnames", "start", "end", "type", "score", "strand", "depth"))
+  read_in_filt <- map(read_in, filter, depth > 5)
+  renamed <- GRangesList()
+  for(i in seq_along(read_in_filt)){
+    #i <- 2
+    df <- read_in_filt[[i]]
+    colnames(df)[5] <- file_names[i]
+    gr <- df %>% dplyr::select(1:3, 5) %>%  as_granges()
+    renamed[[i]] <- gr
+  }
+  # Create a joint region set for all of the methylation data
+  red <- Reduce(intersect, renamed)
+  # Subset each sample by this joint region set
+  grl_shared <- GRangesList(lapply(renamed, function(x) {
+    subsetByOverlaps(x, red)
+  }))
+  grl_comb <- grl_shared %>% map(., as.data.frame) %>% map(~ {
+    .x %>%
+      # Add a column containing the range info
+      mutate(ranges = str_c(as.character(seqnames), ":", start, "-", end)) %>%
+      # Select this column and non-NA columns (left over from previous steps)
+      dplyr::select(ranges, where(~ !any(is.na(.x)))) %>%
+      # Remove the seqnames, start, end, width, and strand columns
+      dplyr::select(-c(seqnames, start, end, width, strand))
+    # Join the data frames
+  }) %>% purrr::reduce(., inner_join, by = "ranges")
+  # Separate the regions column used for merging back into GenomicRanges syntax and then reconvert back to GRanges
+  gr_comp <- grl_comb %>% separate(ranges, into = c("seqnames", "start", "end"), sep = "[:-]", remove = TRUE, convert = TRUE) %>% as_granges()
+  
+  return(gr_comp)
+}
+B36_methyl_gr <- read_in_methlylation(B36_methylc)
+B49_methyl_gr <- read_in_methlylation(B49_methylc)
+B66_methyl_gr <- read_in_methlylation(B66_methylc)
+#NHA_methyl_gr <- read_in_methlylation(NHA_methylc)
+#qNHA_methyl_gr <- read_in_methlylation(qNHA_methylc)
+
+temp_methyl <- join_overlap_left(gr, B36_methyl_gr) %>% as.data.frame() %>%
+  mutate(region_name2 = str_c(.$seqnames, .$start, .$end, sep = ":")) %>% distinct(region_name2, .keep_all = TRUE) %>% dplyr::select(-c(seqnames, start, end, width, strand, region_name2))
+
+temp_methyl1 <- join_overlap_left(gr, B49_methyl_gr) %>% as.data.frame() %>%
+  mutate(region_name2 = str_c(.$seqnames, .$start, .$end, sep = ":")) %>% distinct(region_name2, .keep_all = TRUE) %>% dplyr::select(-c(seqnames, start, end, width, strand, region_name2))
+
+temp_methyl2 <- join_overlap_left(gr, B66_methyl_gr) %>% as.data.frame() %>%
+  mutate(region_name2 = str_c(.$seqnames, .$start, .$end, sep = ":")) %>% distinct(region_name2, .keep_all = TRUE) %>% dplyr::select(-c(seqnames, start, end, width, strand, region_name2))
+
+
+joint_methyl <- cbind(temp_methyl,temp_methyl1)
+joint_methyl <- cbind(joint_methyl,temp_methyl2)
+joint_methyl <- joint_methyl[,c(1,2,3,4,5,6,7,8,13,14,15,16,21,22,23,24)]
+
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/2_TAD/cremins_pipe/DI_overlap")
+bound_ctcf = read.csv("4_dynamic_boundary/dynamic_sig_withDI_new_slop50kb_ctcf_merged_sumctcf.bed", sep = "\t", header = FALSE)
+#test = bound_ctcf %>% 
+#  group_by(V1, V2,V3) %>% slice_max(abs(V37))
+#bound_ctcf = test
+joint_methyl$region_name = paste0(joint_methyl$chr,":",joint_methyl$peak_start,":",joint_methyl$peak_end)
+bound_ctcf$name = paste0(bound_ctcf$V21,":", bound_ctcf$V22,":", bound_ctcf$V23)
+for (i in 1:nrow(bound_ctcf)) {
+  bound_ctcf[i,44:55] = joint_methyl[joint_methyl$region_name == bound_ctcf$name[i],5:16]
+}
+
+bound = bound_ctcf[,4:16]
+#rownames(bound) = bound_ctcf$name
+ctcf = bound_ctcf[,24:35]
+#rownames(ctcf) = bound_ctcf$name
+methyl = bound_ctcf[,44:55]
+
+scaled_bound = t(scale(t(as.matrix(bound))))
+#temp = bound_ctcf[roworder,]
+scaled_ctcf = t(scale(t(as.matrix(ctcf))))
+scaled_methyl = t(scale(t(as.matrix(methyl))))
+
+col_fun = circlize::colorRamp2(c(-3, 0, 3), c("lightblue", "white", "red"))
+heatmap_TAD = ComplexHeatmap::Heatmap(as.matrix(scaled_bound),
+                                      col = col_fun,
+                                      show_row_names = FALSE, 
+                                      show_column_names = TRUE, 
+                                      name="boundary_deltaDI",
+                                      cluster_rows = TRUE,
+                                      cluster_columns = FALSE,
+                                      row_gap = unit(2, "mm"),
+                                      row_title = NULL,
+                                      use_raster = FALSE,
+                                      border = TRUE)
+heatmap_TAD
+
+roworder = row_order(heatmap_TAD)
+
+scaled_ctcf = scaled_ctcf[roworder,]
+
+heatmap_ctcf = ComplexHeatmap::Heatmap(as.matrix(scaled_ctcf),
+                                      col = col_fun,
+                                      show_row_names = FALSE, 
+                                      show_column_names = TRUE, 
+                                      name="boundary_deltaDI",
+                                      cluster_rows = FALSE,
+                                      cluster_columns = FALSE,
+                                      row_gap = unit(2, "mm"),
+                                      row_title = NULL,
+                                      use_raster = FALSE,
+                                      border = TRUE)
+heatmap_ctcf
+
+scaled_methyl = scaled_methyl[roworder,]
+
+heatmap_methyl = ComplexHeatmap::Heatmap(as.matrix(scaled_methyl),
+                                       col = col_fun,
+                                       show_row_names = FALSE, 
+                                       show_column_names = TRUE, 
+                                       name="boundary_deltaDI",
+                                       cluster_rows = FALSE,
+                                       cluster_columns = FALSE,
+                                       row_gap = unit(2, "mm"),
+                                       row_title = NULL,
+                                       use_raster = FALSE,
+                                       border = TRUE)
+heatmap_methyl
+
+bound_mega = data.frame("B36_DMSO"=(bound_ctcf[,4] + bound_ctcf[,5])/2,
+                             "B36_DP" = (bound_ctcf[,6] + bound_ctcf[,7])/2,
+                             "B49_DMSO" = (bound_ctcf[,8] + bound_ctcf[,9])/2,
+                             "B49_DP" = (bound_ctcf[,10] + bound_ctcf[,11])/2,
+                             "B66_DMSO" = (bound_ctcf[,12] + bound_ctcf[,13])/2,
+                             "B66_DP" = (bound_ctcf[,14] + bound_ctcf[,15] + bound_ctcf[,16])/3)
+
+ctcf_mega = data.frame("B36_DMSO" = (bound_ctcf[,24] + bound_ctcf[,25])/2,
+                        "B36_DP" = (bound_ctcf[,26] + bound_ctcf[,27])/2,
+                        "B49_DMSO" = (bound_ctcf[,28] + bound_ctcf[,29])/2,
+                        "B49_DP" = (bound_ctcf[,30] + bound_ctcf[,31])/2,
+                        "B66_DMSO" = (bound_ctcf[,32] + bound_ctcf[,33])/2,
+                        "B66_DP" = (bound_ctcf[,34] + bound_ctcf[,35])/2)
+
+scaled_bound = t(scale(t(as.matrix(bound_mega))))
+scaled_ctcf = t(scale(t(as.matrix(ctcf_mega))))
+
+pdf("tad_bd_ctcf.DI_delta_mega_zscore.pdf",height=5,width=4)
+col_fun = circlize::colorRamp2(c(-3, 0, 3), c("lightblue", "white", "red"))
+heatmap_TAD = ComplexHeatmap::Heatmap(as.matrix(scaled_bound),
+                                      col = col_fun,
+                                      show_row_names = FALSE, 
+                                      show_column_names = TRUE, 
+                                      name="Boundary_deltaDI",
+                                      cluster_rows = TRUE,
+                                      cluster_columns = FALSE,
+                                      row_gap = unit(2, "mm"),
+                                      row_title = NULL,
+                                      use_raster = FALSE,
+                                      border = TRUE)
+print(heatmap_TAD)
+dev.off()
+
+roworder = row_order(heatmap_TAD)
+
+scaled_ctcf = scaled_ctcf[roworder,]
+
+pdf("tad_bd_ctcf.ctcf_mega_zscore.pdf",height=6,width=3.5)
+col_fun = circlize::colorRamp2(c(-3, 0, 3), c("lightblue", "white", "red"))
+heatmap_ctcf = ComplexHeatmap::Heatmap(as.matrix(scaled_ctcf),
+                                       col = col_fun,
+                                       show_row_names = FALSE, 
+                                       show_column_names = TRUE, 
+                                       name="CTCF_ZScore",
+                                       cluster_rows = FALSE,
+                                       cluster_columns = FALSE,
+                                       row_gap = unit(2, "mm"),
+                                       row_title = NULL,
+                                       use_raster = FALSE,
+                                       border = TRUE)
+print(heatmap_ctcf)
+dev.off()
+
+scaled_bound = t(scale(t(as.matrix(bound_mega))))
+scaled_ctcf = t(scale(t(as.matrix(ctcf_mega))))
+
+col_fun = circlize::colorRamp2(c(-3, 0, 3), c("lightblue", "white", "red"))
+heatmap_TAD = ComplexHeatmap::Heatmap(as.matrix(scaled_bound),
+                                      col = col_fun,
+                                      show_row_names = FALSE, 
+                                      show_column_names = TRUE, 
+                                      name="Boundary_deltaDI",
+                                      cluster_rows = TRUE,
+                                      cluster_columns = FALSE,
+                                      row_gap = unit(2, "mm"),
+                                      row_title = NULL,
+                                      use_raster = FALSE,
+                                      border = TRUE)
+print(heatmap_TAD)
+
+col_fun = circlize::colorRamp2(c(-3, 0, 3), c("darkblue", "white", "darkred"))
+heatmap_ctcf = ComplexHeatmap::Heatmap(as.matrix(scaled_ctcf),
+                                       col = col_fun,
+                                       show_row_names = FALSE, 
+                                       show_column_names = TRUE, 
+                                       name="CTCF_ZScore",
+                                       cluster_rows = FALSE,
+                                       cluster_columns = FALSE,
+                                       row_gap = unit(2, "mm"),
+                                       row_title = NULL,
+                                       use_raster = FALSE,
+                                       border = TRUE)
+print(heatmap_ctcf)
+
+
+
+pdf("tad_bd_ctcf.DI_delta_ctcf_mega_zscore.pdf",height=5,width=6)
+print(heatmap_TAD+heatmap_ctcf)
+dev.off()
+
+
+
+
+
+
+
+
+
+all_ctcf = read.csv("/scratch/mmoore/Epitherapy3D/analysis/HiC/3_TAD_CTCF/csv_outputs/GSC_cutrun_joint_counts_sig_DEG.csv")
+all_ctcf = all_ctcf[,2:13]
+scaled_all_ctcf = t(scale(t(as.matrix(all_ctcf))))
+heatmap_all_ctcf = ComplexHeatmap::Heatmap(as.matrix(scaled_all_ctcf),
+                                      col = col_fun,
+                                      show_row_names = FALSE, 
+                                      show_column_names = TRUE, 
+                                      name="boundary_deltaDI",
+                                      cluster_rows = TRUE,
+                                      cluster_columns = FALSE,
+                                      row_gap = unit(2, "mm"),
+                                      row_title = NULL,
+                                      use_raster = FALSE,
+                                      border = TRUE)
+heatmap_all_ctcf
+
+
+#8_TE_overlap/TAD.CTCF.metrics.txt 
+#File	TADs	with_up_peak	with_down_peak	any_diff_peak	No_diff_peak  Both
+#dynamic_strengthened_sig_slop50kb.bed	599	315	40	340	259 15
+#dynamic_weakened_sig_slop50kb.bed	602	139	156	262	340 33
+#not_dynamic_sig_slop50kb.bed	5308	1449	693	1975	3333  167
+
+bound_type <- c(rep("DP_specific",4), rep("DMSO_specific",4), rep("static",4))
+peak_type <- c(rep(c("DP_specific","DMSO_specific","Both","Neither"),3))
+value <- c(315-15,40-15,15,259,
+           139-33,156-33,33,340,
+           1449-167,693-167,167,3333)
+#lab <- c("TAD Boundaries", "TAD Boundaries", "TAD Boundaries")
+data <- data.frame(value,bound_type, peak_type)
+data$bound_type <- factor(data$bound_type, levels=c("static", "DMSO_specific", "DP_specific"))
+data$peak_type <- factor(data$peak_type, levels=c("DP_specific","Both","DMSO_specific","Neither"))
+
+pdf("tad_bd.class.ctcf.class.pdf",height=5,width=5)
+p <- ggplot(data, aes(x=bound_type, y=value, fill=peak_type)) + geom_bar(position="fill", stat="identity", width=0.7) + 
+  xlab(NULL) + ylab("Percent of TAD Boundaries") + ylim(0,7000) + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+        panel.background = element_blank(), axis.line = element_line(colour = "black")) + 
+  scale_y_continuous(expand = c(0, 0)) + scale_x_discrete(expand = c(0, 0)) +
+  scale_fill_manual(values = c("#f44336","purple","#3d85c6","#F6caba")) + 
+  labs(fill="Peak Type")
+print(p)
+dev.off()
+
+
+#8_TE_overlap/TE_summits/TAD.CTCF.TE.metrics.txt 
+#File	Num_diff_peaks	TE_diff_peaks	LINE	SINE	LTR	DNA
+#dynamic_strengthened_sig_slop50kb.bed	340	295	79	138	84	44
+#dynamic_weakened_sig_slop50kb.bed	262	204	55	96	50	35
+#not_dynamic_sig_slop50kb.bed	1975	1626	473	767	447	274
+bound_type <- c(rep("DP_specific",2), rep("DMSO_specific",2), rep("static",2))
+te_type <- c(rep(c("TE","No_TE"),3))
+value <- c(295,340-295,
+           204,262-204,
+           1626,1975-1626)
+#lab <- c("TAD Boundaries", "TAD Boundaries", "TAD Boundaries")
+data <- data.frame(value,bound_type, te_type)
+data$bound_type <- factor(data$bound_type, levels=c("static", "DMSO_specific", "DP_specific"))
+data$te_type <- factor(data$te_type, levels=c("No_TE","TE"))
+
+#pdf("tad_bd.class.ctcf.class.pdf",height=5,width=5)
+p <- ggplot(data, aes(x=bound_type, y=value, fill=te_type)) + geom_bar(position="fill", stat="identity", width=0.7) + 
+  xlab(NULL) + ylab("Percent of Diff Peaks") + ylim(0,7000) + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+        panel.background = element_blank(), axis.line = element_line(colour = "black")) + 
+  scale_y_continuous(expand = c(0, 0)) + scale_x_discrete(expand = c(0, 0)) +
+  scale_fill_manual(values = c("#F6caba","#f44336")) + 
+  labs(fill="TE Type")
+print(p)
+#dev.off()
+
+bound_type <- c(rep("DP_specific",4), rep("DMSO_specific",4), rep("static",4))
+te_type <- c(rep(c("LINE","SINE","LTR","DNA"),3))
+value <- c(79,138,84,44,
+           55,96,50,35,
+           473,767,447,274)
+#lab <- c("TAD Boundaries", "TAD Boundaries", "TAD Boundaries")
+data <- data.frame(value,bound_type, te_type)
+data$bound_type <- factor(data$bound_type, levels=c("static", "DMSO_specific", "DP_specific"))
+data$te_type <- factor(data$te_type, levels=c("LINE","SINE","LTR","DNA"))
+
+#pdf("tad_bd.class.ctcf.class.pdf",height=5,width=5)
+p <- ggplot(data, aes(x=bound_type, y=value, fill=te_type)) + geom_bar(position="fill", stat="identity", width=0.7) + 
+  xlab(NULL) + ylab("Percent of Diff Peaks") + ylim(0,7000) + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+        panel.background = element_blank(), axis.line = element_line(colour = "black")) + 
+  scale_y_continuous(expand = c(0, 0)) + scale_x_discrete(expand = c(0, 0)) +
+  scale_fill_manual(values = c("#f44336","purple","#3d85c6","#F6caba")) + 
+  labs(fill="TE Type")
+print(p)
+#dev.off()
+
+
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

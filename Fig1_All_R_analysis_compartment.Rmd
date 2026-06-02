@@ -1,0 +1,1214 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+###Load packages
+library(ggsankey)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(ggpubr)
+library(rstatix)
+library(clusterProfiler)
+library(tidyverse)
+library(DBI)
+library(org.Hs.eg.db)
+library(ComplexUpset)
+library(patchwork)
+library(ggplotify)
+library(grid)
+library(magick)
+library(cowplot)
+library(msigdbr)
+
+```
+
+```{r}
+design = data.frame(Cell=c(rep(c("B36","B49","B66","NHA","qNHA","B36","B49","B66","NHA","qNHA"),6)),
+                  Day0_4=c(rep(c(rep("saline",5),rep("1uM DAC",5)),6)),
+                  Day4_6=c(rep(c(rep("saline\n0.05% DMSO",5),rep("1uM DAC\n100nM Pano",5)),6)),
+                  Assay=c(rep("RNA",10),rep("ATAC",10),rep("WGBS",10),rep("In situ\nHiC", 10), rep("CTCF\nCUT&RUN",10), rep("snm3c",10)))
+
+df <- design %>%
+  make_long(Cell, Day0_4, Day4_6, Assay)
+
+df$node = factor(df$node,levels = c("snm3c","CTCF\nCUT&RUN","In situ\nHiC","WGBS","ATAC","RNA","1uM DAC\n100nM Pano","saline\n0.05% DMSO","1uM DAC","saline","qNHA","NHA","B66","B49","B36"))
+df$next_node = factor(df$next_node,levels = c("snm3c","CTCF\nCUT&RUN","In situ\nHiC","WGBS","ATAC","RNA","1uM DAC\n100nM Pano","saline\n0.05% DMSO","1uM DAC","saline"))
+
+p = ggplot(df, aes(x = x, 
+               next_x = next_x, 
+               node = node, 
+               next_node = next_node,
+               fill = factor(node),
+               label = node)) + 
+  geom_sankey(alpha=0.7) + 
+  geom_sankey_label(size = 7, color = "black", fill = "white") +
+  scale_fill_discrete(drop=FALSE) + labs(x = NULL) +
+  #scale_fill_manual(values=c("#CCEBC5","#FCCDE5","#B3DE69","#BC80BD","#FFFFB3","#BEBADA","#FB8072","#80B1D3","#FDB462",
+  #                          "#8DD3C7","#8DD3C7","#8DD3C7","#8DD3C7","#8DD3C7","#8DD3C7")) 
+  scale_fill_manual(values=c("#00BFC4","#F8766D","#00BFC4","#F8766D","#B3DE69","#BC80BD","#80B1D3","#FDB462","#8DD3C7",
+                            "#FCCDE5","#FCCDE5","#FCCDE5","#FCCDE5","#FCCDE5","#FCCDE5")) +
+  #scale_x_continuous(expand = expansion(add = c(0.3, 0.3))) +
+  theme_void() + 
+  theme(legend.position = "none", plot.margin = margin(0, 0, 0, 0)) +
+  annotate("text", x = 1, y = 55, label = "Cell Line", color = "black", size = 6) +
+  annotate("text", x = 2, y = 55, label = "Day 0 to 4", color = "black", size = 6) +
+  annotate("text", x = 3, y = 55, label = "Day 4 to 6", color = "black", size = 6) +
+  annotate("text", x = 4, y = 55, label = "Assays", color = "black", size = 6)
+p
+
+tmp <- tempfile(fileext = ".png")
+png(tmp, width = 8, height = 6, units = "in", res = 600)
+print(p)
+dev.off()
+  
+p_img <- image_read(tmp)
+p_img_cropped <- image_trim(p_img)
+
+p_gg <- ggplot() +
+  annotation_raster(p_img_cropped, xmin = 0, xmax = 1, ymin = 0, ymax = 1) +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), clip = "on") +
+  scale_x_continuous(breaks = NULL, expand = c(0, 0)) +
+  scale_y_continuous(breaks = NULL, expand = c(0, 0)) +
+  theme_void() +
+  theme(
+    plot.margin    = margin(0, 0, 0, 0),
+    axis.text      = element_blank(),
+    axis.ticks     = element_blank(),
+    axis.title     = element_blank(),
+    panel.border   = element_blank(),
+    panel.background = element_blank()
+  )
+print(p_gg)
+
+pdf("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/experimental_design.pdf")
+print(p)
+dev.off()
+
+png("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/experimental_design.png")
+print(p)
+dev.off()
+
+Fig_1A = p_gg
+
+```
+
+```{r}
+###SVL analysis
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/0_SVL/mega")
+
+###Input is SVL values calculated from HiCExplorer on VC_SQRT cool files with 2mb and 50kb cutoffs
+svl_2mb = read_tsv("SVL_all_data.txt", skip=5, col_names = FALSE)
+svl_50kb = read_tsv("SVL_all_50_data.txt", skip=5, col_names = FALSE)
+
+###Subtract contacts <=50kb (1bin) from <=2mb to remove effects of diagonal
+svl_ratio = (svl_2mb$X3 - svl_50kb$X3)/svl_2mb$X4 %>% as.data.frame()
+for (i in 2:10) {
+  temp = (svl_2mb[,3*i] - svl_50kb[,3*i])/svl_2mb[,3*i+1] %>% as.data.frame()
+  svl_ratio = cbind(svl_ratio, temp)
+}
+
+###Remove chrM, sex chromosomes
+svl_ratio = svl_ratio[2:23,]
+
+###Make dataframe with SVL by condition
+df = data.frame(SVL=c(svl_ratio[,1],svl_ratio[,2], svl_ratio[,3], svl_ratio[,4], svl_ratio[,5], 
+                      svl_ratio[,6], svl_ratio[,7], svl_ratio[,8], svl_ratio[,9], svl_ratio[,10]),
+                condition = c(rep("B36_DMSO",22), rep("B36_DP",22), rep("B49_DMSO",22), rep("B49_DP",22),
+                              rep("B66_DMSO",22), rep("B66_DP",22), rep("NHA_DMSO",22), rep("NHA_DP",22),
+                              rep("qNHA_DMSO",22), rep("qNHA_DP",22)),
+                cell_line = c(rep("B36",44), rep("B49", 44), rep("B66",44), rep("NHA", 44), rep("qNHA",44)),
+                Treatment = c(rep("DMSO", 22), rep("DP", 22), rep("DMSO", 22), rep("DP", 22),
+                              rep("DMSO", 22), rep("DP", 22), rep("DMSO", 22), rep("DP", 22),
+                              rep("DMSO", 22), rep("DP", 22)))
+
+###Calculate p-values
+p_val = compare_means(SVL ~ condition, data = df, method = "t.test")
+my_comparisons <- list( c("B36_DMSO", "B36_DP"), c("B49_DMSO", "B49_DP"), c("B66_DMSO", "B66_DP"), c("NHA_DMSO", "NHA_DP"), c("qNHA_DMSO", "qNHA_DP") )
+
+p <- ggplot(df, aes(x=cell_line, y=SVL, color = Treatment)) +geom_boxplot() + geom_point(aes(color = Treatment), position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.8), alpha = 0.7, size = 1.5) + stat_compare_means(aes(group = Treatment), label = "p.signif", label.y = 5, method = "t.test", paired = TRUE) + theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black")) + ylab("I(<=2mb) / I(>2mb) ratio") + xlab("")
+p
+
+pdf("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/SVL_analysis.pdf")
+print(p)
+dev.off()
+
+png("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/SVL_analysis.png")
+print(p)
+dev.off()
+
+Fig_1B = p
+
+```
+
+```{r}
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/0_SVL/mega/")
+
+DMSO_df=data.frame()
+DP_df=data.frame()
+for (i in c("B36","B49","B66","NHA","qNHA")) {
+  files_DMSO=list.files("VC_matrix/", pattern = paste0(i,"_DMSO"))
+  files_DP=list.files("VC_matrix/", pattern = paste0(i,"_DP"))
+  
+  for (j in 1:length(files_DMSO)) {
+    temp = read.table(paste0("VC_matrix/",files_DMSO[j]))
+    temp$V4=strsplit(paste0(files_DMSO[j]),"\\.")[[1]][3]
+    temp$V5=strsplit(paste0(files_DMSO[j]),"_")[[1]][1]
+    temp$V6=strsplit(strsplit(paste0(files_DMSO[j]),"_")[[1]][2],"\\.")[[1]][1]
+    temp$V7=temp$V2-temp$V1
+    temp=temp[temp$V2-temp$V1>50000,]
+    
+    collapsed_temp <- temp %>% group_by(V4,V5,V6,V7) %>% dplyr::summarise(total_value = sum(V3, na.rm = TRUE))
+    DMSO_df=rbind(DMSO_df,collapsed_temp)
+  }
+  
+  for (j in 1:length(files_DP)) {
+    temp = read.table(paste0("VC_matrix/",files_DP[j]))
+    temp$V4=strsplit(paste0(files_DP[j]),"\\.")[[1]][3]
+    temp$V5=strsplit(paste0(files_DP[j]),"_")[[1]][1]
+    temp$V6=strsplit(strsplit(paste0(files_DP[j]),"_")[[1]][2],"\\.")[[1]][1]
+    temp$V7=temp$V2-temp$V1
+    temp=temp[temp$V2-temp$V1>50000,]
+    
+    collapsed_temp <- temp %>% group_by(V4,V5,V6,V7) %>% dplyr::summarise(total_value = sum(V3, na.rm = TRUE))
+    DP_df=rbind(DP_df,collapsed_temp)
+  }
+}
+
+collapsed_DMSO = DMSO_df %>% group_by(V5,V6,V7) %>% dplyr::summarise(total_value = sum(total_value, na.rm = TRUE))
+collapsed_DP = DP_df %>% group_by(V5,V6,V7) %>% dplyr::summarise(total_value = sum(total_value, na.rm = TRUE))
+
+for (i in c("B36","B49","B66","NHA","qNHA")) {
+  collapsed_DMSO[collapsed_DMSO$V5==i,]$total_value = collapsed_DMSO[collapsed_DMSO$V5==i,]$total_value/sum(collapsed_DMSO[collapsed_DMSO$V5==i,]$total_value)
+  collapsed_DP[collapsed_DP$V5==i,]$total_value = collapsed_DP[collapsed_DP$V5==i,]$total_value/sum(collapsed_DP[collapsed_DP$V5==i,]$total_value)
+}
+
+merged = rbind(collapsed_DMSO,collapsed_DP)
+merged$log_dist = log(merged$V7, base=10)
+merged$log_vals = log(merged$total_value, base=10)
+merged$condition=paste0(merged$V5,"_",merged$V6)
+
+merged_wide <- merged[,5:7] %>% pivot_wider(names_from = condition, values_from = log_vals)
+merged_wide = drop_na(merged_wide)
+merged_ratio = data.frame(log_dist=c(merged_wide$log_dist),
+                          B36=c(merged_wide$B36_DP-merged_wide$B36_DMSO),
+                          B49=c(merged_wide$B49_DP-merged_wide$B49_DMSO),
+                          B66=c(merged_wide$B66_DP-merged_wide$B66_DMSO),
+                          NHA=c(merged_wide$NHA_DP-merged_wide$NHA_DMSO),
+                          qNHA=c(merged_wide$qNHA_DP-merged_wide$qNHA_DMSO))
+merged_ratio_long <- merged_ratio %>% pivot_longer(
+    cols = c(B36,B49,B66,NHA,qNHA),
+    names_to = "Cell",
+    values_to = "log_vals")
+merged_ratio_long$vals=10^merged_ratio_long$log_vals
+
+p = ggplot(merged_ratio_long, aes(x = log_dist, y = log_vals, color=Cell)) + xlim(5,8) + ylim(-0.25,0.25) + geom_line() + theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black")) + geom_hline(yintercept = 0, linetype = "dashed") + geom_vline(xintercept = log(2000000, base=10), linetype = "dashed") + xlab("log(Contact Distance)") + ylab("log(Contact Probability DP/DMSO)") + labs(color = "Cell Line") + scale_color_brewer(palette = "Set2")
+p
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/contact_prob_ratio.pdf"))
+print(p)
+dev.off()
+
+png(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/contact_prob_ratio.png"))
+print(p)
+dev.off()
+
+Supp_1A = p
+
+
+```
+
+```{r}
+###Differential compartment analysis
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/1_compartment/BRep/")
+files=list.files("comp_call_VC_SQRT_flipped/flipped/", pattern = "\\.bedgraph$")
+
+###Input is calibrated compartment bedgraph files
+comp_table=read.table(paste0("comp_call_VC_SQRT_flipped/flipped/",files[[1]]))
+for (i in 2:13) {
+  temp <- read.table(paste0("comp_call_VC_SQRT_flipped/flipped/",files[[i]]))
+  comp_table=cbind(comp_table,temp[,4])
+}
+
+###Remove rows with NA and merge into data frame
+comp_table = drop_na(comp_table)
+colnames(comp_table) = c("chr","start","end","B36_DMSO_1","B36_DMSO_2","B36_DP_1","B36_DP_2",
+                         "B49_DMSO_1","B49_DMSO_2","B49_DP_1","B49_DP_2",
+                         "B66_DMSO_1","B66_DMSO_2","B66_DP_1","B66_DP_2","B66_DP_3")
+comp_df = comp_table[,4:16]
+write.table(comp_table, "comp_call_VC_SQRT_flipped/GSC_BRep_compartment.withoutNA.tsv", quote=FALSE, sep="\t", row.names = FALSE)
+
+###Differential compartment calling with limma and make summary table of compartment changes
+group = factor(substr(colnames(comp_df),1,nchar(colnames(comp_df))-2))
+design = model.matrix(~0+group) %>% as.data.frame()
+colnames(design) = levels(group)
+fit = lmFit(comp_df, design)
+
+comp_stats = data.frame()
+for (i in c("B36","B49","B66")) {
+  myContrasts = c(paste0(i,"_DMSO-",i,"_DP"))
+  contrast.matrix = eval(as.call(c(as.symbol("makeContrasts"),as.list(myContrasts),levels=list(design))))
+  fit2 = contrasts.fit(fit, contrast.matrix)
+  fit4 = eBayes(fit2,trend=F)
+  fdr = apply(fit4$p.value,2,p.adjust,method="BH")
+  apply(fdr<0.05,2,table)
+  comp_sig = rownames(comp_df)[which(rowSums(fdr<0.05)>0)]
+  comp_sigs = comp_table[which(rownames(comp_table) %in% comp_sig),]
+  write.table(comp_sigs, paste0("comp_call_VC_SQRT_flipped/",i,"_BRep_compartment.sig.tsv"), quote=FALSE, sep="\t", row.names = FALSE)
+  if (i!="B66") {
+    sigBA=nrow(comp_sigs[(comp_sigs[,paste0(i,"_DMSO_1")]+comp_sigs[,paste0(i,"_DMSO_2")])/2 < 0 & (comp_sigs[,paste0(i,"_DP_1")]+comp_sigs[,paste0(i,"_DP_2")])/2 > 0,])
+    sigAB=nrow(comp_sigs[(comp_sigs[,paste0(i,"_DMSO_1")]+comp_sigs[,paste0(i,"_DMSO_2")])/2 > 0 & (comp_sigs[,paste0(i,"_DP_1")]+comp_sigs[,paste0(i,"_DP_2")])/2 < 0,])
+    AA=nrow(comp_table[(comp_table[,paste0(i,"_DMSO_1")]+comp_table[,paste0(i,"_DMSO_2")])/2 > 0 & (comp_table[,paste0(i,"_DP_1")]+comp_table[,paste0(i,"_DP_2")])/2 > 0,])
+    BB=nrow(comp_table[(comp_table[,paste0(i,"_DMSO_1")]+comp_table[,paste0(i,"_DMSO_2")])/2 < 0 & (comp_table[,paste0(i,"_DP_1")]+comp_table[,paste0(i,"_DP_2")])/2 < 0,])
+    BA=nrow(comp_table[(comp_table[,paste0(i,"_DMSO_1")]+comp_table[,paste0(i,"_DMSO_2")])/2 < 0 & (comp_table[,paste0(i,"_DP_1")]+comp_table[,paste0(i,"_DP_2")])/2 > 0,])
+    AB=nrow(comp_table[(comp_table[,paste0(i,"_DMSO_1")]+comp_table[,paste0(i,"_DMSO_2")])/2 > 0 & (comp_table[,paste0(i,"_DP_1")]+comp_table[,paste0(i,"_DP_2")])/2 < 0,])
+    total=nrow(comp_table)
+    vec = c(AA,BB,BA,AB,sigBA,sigAB,total)
+    comp_stats = rbind(comp_stats,vec)
+  } else {
+    sigBA=nrow(comp_sigs[(comp_sigs[,paste0(i,"_DMSO_1")]+comp_sigs[,paste0(i,"_DMSO_2")])/2 < 0 & (comp_sigs[,paste0(i,"_DP_1")]+comp_sigs[,paste0(i,"_DP_2")]+comp_sigs[,paste0(i,"_DP_3")])/3 > 0,])
+    sigAB=nrow(comp_sigs[(comp_sigs[,paste0(i,"_DMSO_1")]+comp_sigs[,paste0(i,"_DMSO_2")])/2 > 0 & (comp_sigs[,paste0(i,"_DP_1")]+comp_sigs[,paste0(i,"_DP_2")]+comp_sigs[,paste0(i,"_DP_3")])/3 < 0,])
+    AA=nrow(comp_table[(comp_table[,paste0(i,"_DMSO_1")]+comp_table[,paste0(i,"_DMSO_2")])/2 > 0 & (comp_table[,paste0(i,"_DP_1")]+comp_table[,paste0(i,"_DP_2")]+comp_table[,paste0(i,"_DP_3")])/3 > 0,])
+    BB=nrow(comp_table[(comp_table[,paste0(i,"_DMSO_1")]+comp_table[,paste0(i,"_DMSO_2")])/2 < 0 & (comp_table[,paste0(i,"_DP_1")]+comp_table[,paste0(i,"_DP_2")]+comp_table[,paste0(i,"_DP_3")])/3 < 0,])
+    BA=nrow(comp_table[(comp_table[,paste0(i,"_DMSO_1")]+comp_table[,paste0(i,"_DMSO_2")])/2 < 0 & (comp_table[,paste0(i,"_DP_1")]+comp_table[,paste0(i,"_DP_2")]+comp_table[,paste0(i,"_DP_3")])/3 > 0,])
+    AB=nrow(comp_table[(comp_table[,paste0(i,"_DMSO_1")]+comp_table[,paste0(i,"_DMSO_2")])/2 > 0 & (comp_table[,paste0(i,"_DP_1")]+comp_table[,paste0(i,"_DP_2")]+comp_table[,paste0(i,"_DP_3")])/3 < 0,])
+    total=nrow(comp_table)
+    vec = c(AA,BB,BA,AB,sigBA,sigAB,total)
+    comp_stats = rbind(comp_stats,vec)
+  }
+}
+colnames(comp_stats) = c("A_to_A","B_to_B","B_to_A","A_to_B","sigB_to_A","sigA_to_B","total")
+
+rownames(comp_stats) = c("B36","B49","B66")
+
+write.table(comp_stats, "comp_call_VC_SQRT_flipped/GSC_compartment.stats.tsv", quote=FALSE, sep="\t", row.names = TRUE)
+
+```
+
+```{r}
+###Differential compartment analysis mega
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/1_compartment/mega/")
+###Repeat for NHA and qNHA and merge stats
+files=list.files("comp_call_VC_SQRT_flipped/flipped/", pattern = "bedgraph")
+
+###Input is calibrated compartment bedgraph files
+comp_table=read.table(paste0("comp_call_VC_SQRT_flipped/flipped/",files[[1]]))
+for (i in 2:10) {
+    temp <- read.table(paste0("comp_call_VC_SQRT_flipped/flipped/",files[[i]]))
+    comp_table=cbind(comp_table,temp[,4])
+}
+
+###Remove rows with NA and merge into data frame
+comp_table = drop_na(comp_table)
+colnames(comp_table) = c("chr","start","end","B36_DMSO","B36_DP","B49_DMSO","B49_DP","B66_DMSO","B66_DP","NHA_DMSO","NHA_DP","qNHA_DMSO","qNHA_DP")
+comp_df = comp_table[,4:13]
+write.table(comp_table, "comp_call_VC_SQRT_flipped/all_mega_compartment.withoutNA.tsv", quote=FALSE, sep="\t", row.names = FALSE)
+
+###Calculate standard deviation from y=x and cutoff for alpha=0.05
+sd_B36 <- sd(comp_df$B36_DMSO-comp_df$B36_DP)
+sd_B49 <- sd(comp_df$B49_DMSO-comp_df$B49_DP)
+sd_B66 <- sd(comp_df$B66_DMSO-comp_df$B66_DP)
+sd_NHA <- sd(comp_df$NHA_DMSO-comp_df$NHA_DP)
+sd_qNHA <- sd(comp_df$qNHA_DMSO-comp_df$qNHA_DP)
+cutoff_B36 = 1.96*sd_B36
+cutoff_B49 = 1.96*sd_B49
+cutoff_B66 = 1.96*sd_B66
+cutoff_NHA = 1.96*sd_NHA
+cutoff_qNHA = 1.96*sd_qNHA
+
+for (i in c("B36","B49","B66","NHA","qNHA")) {
+  comp_sig=comp_table[(abs(comp_table[,paste0(i,"_DMSO")]-comp_table[,paste0(i,"_DP")])>get(paste0("cutoff_",i, sep="")) & comp_table[,paste0(i,"_DMSO")]<0 & comp_table[,paste0(i,"_DP")]>0) | (abs(comp_table[,paste0(i,"_DMSO")]-comp_table[,paste0(i,"_DP")])>get(paste0("cutoff_",i, sep="")) & comp_table[,paste0(i,"_DMSO")]>0 & comp_table[,paste0(i,"_DP")]<0),]
+  write.table(comp_sig, paste0("comp_call_VC_SQRT_flipped/",i,"_compartment.sig.tsv"), quote=FALSE, sep="\t", row.names = FALSE)
+}
+
+comp_stats = data.frame()
+for (i in c("B36","B49","B66","NHA","qNHA")) {
+  sigBA=nrow(comp_table[abs(comp_table[,paste0(i,"_DMSO")]-comp_table[,paste0(i,"_DP")])>get(paste0("cutoff_",i, sep="")) & comp_table[,paste0(i,"_DMSO")]<0 & comp_table[,paste0(i,"_DP")]>0,])
+  sigAB=nrow(comp_table[abs(comp_table[,paste0(i,"_DMSO")]-comp_table[,paste0(i,"_DP")])>get(paste0("cutoff_",i, sep="")) & comp_table[,paste0(i,"_DMSO")]>0 & comp_table[,paste0(i,"_DP")]<0,])
+  AA=nrow(comp_table[comp_table[,paste0(i,"_DMSO")]>0 & comp_table[,paste0(i,"_DP")]>0,])
+  BB=nrow(comp_table[comp_table[,paste0(i,"_DMSO")]<0 & comp_table[,paste0(i,"_DP")]<0,])
+  BA=nrow(comp_table[comp_table[,paste0(i,"_DMSO")]<0 & comp_table[,paste0(i,"_DP")]>0,])
+  AB=nrow(comp_table[comp_table[,paste0(i,"_DMSO")]>0 & comp_table[,paste0(i,"_DP")]<0,])
+  total=nrow(comp_table)
+  vec = c(AA,BB,BA,AB,sigBA,sigAB,total)
+  comp_stats = rbind(comp_stats,vec)
+}
+colnames(comp_stats) = c("A_to_A","B_to_B","B_to_A","A_to_B","sigB_to_A","sigA_to_B","total")
+rownames(comp_stats) = c("B36","B49","B66","NHA","qNHA")
+write.table(comp_stats, "comp_call_VC_SQRT_flipped/all_compartment.stats.tsv", quote=FALSE, sep="\t", row.names = TRUE)
+
+```
+
+```{r}
+###Compartment analysis plotting
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/1_compartment/mega/")
+files=list.files("comp_call_VC_SQRT_flipped/flipped/", pattern = "\\.bedgraph$")
+
+###Input is calibrated compartment bedgraph files
+comp_table=read.table(paste0("comp_call_VC_SQRT_flipped/flipped/",files[[1]]))
+for (i in 2:10) {
+  temp <- read.table(paste0("comp_call_VC_SQRT_flipped/flipped/",files[[i]]))
+  comp_table=cbind(comp_table,temp[,4])
+}
+
+###Remove rows with NA and merge into data frame
+comp_table = drop_na(comp_table)
+colnames(comp_table) = c("chr","start","end","B36_DMSO","B36_DP","B49_DMSO","B49_DP",
+                         "B66_DMSO","B66_DP","NHA_DMSO","NHA_DP","qNHA_DMSO","qNHA_DP")
+comp_df = comp_table[,4:13]
+
+###Read cell line significant comp changes, subset and annotate mega data frame for each cell line, and plot scatter 
+plots <- list()
+for (i in c("B36","B49","B66","NHA","qNHA")) {
+  if (i=="B66") {
+    comp_sig = read.table(paste0("../BRep/comp_call_VC_SQRT_flipped/",i,"_BRep_compartment.sig.tsv"), header=T)
+    sigBA=(comp_sig[(comp_sig[,paste0(i,"_DMSO_1")]+comp_sig[,paste0(i,"_DMSO_2")])/2 < 0 & (comp_sig[,paste0(i,"_DP_1")]+comp_sig[,paste0(i,"_DP_2")]+comp_sig[,paste0(i,"_DP_3")])/3 > 0,])
+    sigAB=(comp_sig[(comp_sig[,paste0(i,"_DMSO_1")]+comp_sig[,paste0(i,"_DMSO_2")])/2 > 0 & (comp_sig[,paste0(i,"_DP_1")]+comp_sig[,paste0(i,"_DP_2")]+comp_sig[,paste0(i,"_DP_3")])/3 < 0,])
+    
+    comp_anno = comp_table[,c("chr","start","end", paste0(i,"_DMSO"), paste0(i,"_DP"))]
+    comp_anno$anno = ifelse(paste0(comp_anno$chr,":",comp_anno$start,"_",comp_anno$end) %in%               paste0(sigAB$chr,":",sigAB$start,"_",sigAB$end), "strong_AtoB",
+            ifelse(paste0(comp_anno$chr,":",comp_anno$start,"_",comp_anno$end) %in%               paste0(sigBA$chr,":",sigBA$start,"_",sigBA$end), "strong_BtoA",
+            ifelse(comp_anno[,4]>0 & comp_anno[,5]<0, "weak_AtoB",
+            ifelse(comp_anno[,4]<0 & comp_anno[,5]>0, "weak_BtoA",
+            ifelse(comp_anno[,4]>0 & comp_anno[,5]>0, "AtoA","BtoB")))))
+  } else if (i %in% c("NHA","qNHA")) {
+    comp_sig = read.table(paste0("comp_call_VC_SQRT_flipped/",i,"_compartment.sig.tsv"), header=T)
+    sigBA=(comp_sig[comp_sig[,paste0(i,"_DMSO")] < 0 & comp_sig[,paste0(i,"_DP")] > 0,])
+    sigAB=(comp_sig[comp_sig[,paste0(i,"_DMSO")] > 0 & comp_sig[,paste0(i,"_DP")] < 0,])
+    
+    comp_anno = comp_table[,c("chr","start","end", paste0(i,"_DMSO"), paste0(i,"_DP"))]
+    comp_anno$anno = ifelse(paste0(comp_anno$chr,":",comp_anno$start,"_",comp_anno$end) %in%               paste0(sigAB$chr,":",sigAB$start,"_",sigAB$end), "strong_AtoB",
+            ifelse(paste0(comp_anno$chr,":",comp_anno$start,"_",comp_anno$end) %in%               paste0(sigBA$chr,":",sigBA$start,"_",sigBA$end), "strong_BtoA",
+            ifelse(comp_anno[,4]>0 & comp_anno[,5]<0, "weak_AtoB",
+            ifelse(comp_anno[,4]<0 & comp_anno[,5]>0, "weak_BtoA",
+            ifelse(comp_anno[,4]>0 & comp_anno[,5]>0, "AtoA","BtoB")))))
+  } else {
+    comp_sig = read.table(paste0("../BRep/comp_call_VC_SQRT_flipped/",i,"_BRep_compartment.sig.tsv"), header=T)
+    sigBA=(comp_sig[(comp_sig[,paste0(i,"_DMSO_1")]+comp_sig[,paste0(i,"_DMSO_2")])/2 < 0 & (comp_sig[,paste0(i,"_DP_1")]+comp_sig[,paste0(i,"_DP_2")])/2 > 0,])
+    sigAB=(comp_sig[(comp_sig[,paste0(i,"_DMSO_1")]+comp_sig[,paste0(i,"_DMSO_2")])/2 > 0 & (comp_sig[,paste0(i,"_DP_1")]+comp_sig[,paste0(i,"_DP_2")])/2 < 0,])
+    
+    comp_anno = comp_table[,c("chr","start","end", paste0(i,"_DMSO"), paste0(i,"_DP"))]
+    comp_anno$anno = ifelse(paste0(comp_anno$chr,":",comp_anno$start,"_",comp_anno$end) %in%               paste0(sigAB$chr,":",sigAB$start,"_",sigAB$end), "strong_AtoB",
+            ifelse(paste0(comp_anno$chr,":",comp_anno$start,"_",comp_anno$end) %in%               paste0(sigBA$chr,":",sigBA$start,"_",sigBA$end), "strong_BtoA",
+            ifelse(comp_anno[,4]>0 & comp_anno[,5]<0, "weak_AtoB",
+            ifelse(comp_anno[,4]<0 & comp_anno[,5]>0, "weak_BtoA",
+            ifelse(comp_anno[,4]>0 & comp_anno[,5]>0, "AtoA","BtoB")))))
+  }
+  p = ggplot(comp_anno, aes(x=!!sym(paste0(i,"_DMSO")), y=!!sym(paste0(i,"_DP")), color=anno)) + geom_point() + geom_abline(intercept = 0, slope = 1, color = "black") + geom_vline(xintercept = 0, linetype = "dashed", color = "black", size = 1) + geom_hline(yintercept = 0, linetype = "dashed", color = "black", size = 1) + scale_color_brewer(palette = "Dark2") + theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black")) + labs(color = "Compartment Type")
+  p
+  plots[[length(plots) + 1]] <- p
+
+  pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/",i,"_compartment_scatter.pdf"))
+  print(p)
+  dev.off()
+  
+  png(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/",i,"_compartment_scatter.png"))
+  print(p)
+  dev.off()
+}
+
+Fig_1C = plots[[1]]
+Supp_1C = plots[[2]]
+Supp_1D = plots[[3]]
+Supp_1E = plots[[4]]
+Supp_1F = plots[[5]]
+
+###Read annotation stats summary and plot stacked bar
+comp_stats = read.table("../BRep/comp_call_VC_SQRT_flipped/GSC_compartment.stats.tsv")
+comp_stats_astro = read.table("comp_call_VC_SQRT_flipped/all_compartment.stats.tsv")
+
+comp_stats_all = rbind(comp_stats, comp_stats_astro[4:5,])
+comp_stats_all$weak_AtoB = comp_stats_all$A_to_B - comp_stats_all$sigA_to_B
+comp_stats_all$weak_BtoA = comp_stats_all$B_to_A - comp_stats_all$sigB_to_A
+comp_stats_all$cell_line = row.names(comp_stats_all)
+comp_stats_all=comp_stats_all[,c(10,1,2,8,9,6,5)]
+colnames(comp_stats_all) = c("cell_line","AtoA","BtoB","weak_AtoB","weak_BtoA","strong_AtoB","strong_BtoA")
+
+stats_pivot = pivot_longer(
+  comp_stats_all,
+  cols = c("AtoA","BtoB","weak_AtoB","weak_BtoA","strong_AtoB","strong_BtoA"), # Columns to melt
+  names_to = "Type",
+  values_to = "Number"
+)
+
+p = ggplot(stats_pivot, aes(fill=factor(Type, levels=c("strong_BtoA","strong_AtoB","weak_BtoA","weak_AtoB","BtoB","AtoA")), y=Number, x=cell_line)) + geom_bar(position="fill", stat="identity") + scale_fill_brewer(palette = "Dark2") + theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black")) + labs(fill = "Compartment Type") + ylab("Fraction of Bins") + xlab("Cell Line") +
+  scale_fill_manual(values = c("strong_BtoA" = "#E7298AFF", "strong_AtoB" = "#7570B3FF", "weak_BtoA" = "#E6AB02FF", "weak_AtoB" = "#66A61EFF", "AtoA" = "#1B9E77FF", "BtoB" = "#D95F02FF"))
+p
+Supp_1B = p
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/compartment_anno_bar.pdf"))
+print(p)
+dev.off()
+
+png(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/compartment_anno_bar.png"))
+print(p)
+dev.off()
+```
+
+```{r}
+###Other compartment analysis
+#Compartment values by type
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/1_compartment/mega/")
+files=list.files("comp_call_VC_SQRT_flipped/flipped/", pattern = "\\.bedgraph$")
+
+###Input is calibrated compartment bedgraph files
+comp_table=read.table(paste0("comp_call_VC_SQRT_flipped/flipped/",files[[1]]))
+for (i in 2:10) {
+  temp <- read.table(paste0("comp_call_VC_SQRT_flipped/flipped/",files[[i]]))
+  comp_table=cbind(comp_table,temp[,4])
+}
+
+###Remove rows with NA and merge into data frame
+comp_table = drop_na(comp_table)
+colnames(comp_table) = c("chr","start","end","B36_DMSO","B36_DP","B49_DMSO","B49_DP",
+                         "B66_DMSO","B66_DP","NHA_DMSO","NHA_DP","qNHA_DMSO","qNHA_DP")
+comp_df = comp_table[,4:13]
+
+comp_anno_all = data.frame()
+###Read cell line significant comp changes, make long-format data frame with bin, anno, DMSO, DP, and cell information
+for (i in c("B36","B49","B66","NHA","qNHA")) {
+  if (i=="B66") {
+    comp_sig = read.table(paste0("../BRep/comp_call_VC_SQRT_flipped/",i,"_BRep_compartment.sig.tsv"), header=T)
+    sigBA=(comp_sig[(comp_sig[,paste0(i,"_DMSO_1")]+comp_sig[,paste0(i,"_DMSO_2")])/2 < 0 & (comp_sig[,paste0(i,"_DP_1")]+comp_sig[,paste0(i,"_DP_2")]+comp_sig[,paste0(i,"_DP_3")])/3 > 0,])
+    sigAB=(comp_sig[(comp_sig[,paste0(i,"_DMSO_1")]+comp_sig[,paste0(i,"_DMSO_2")])/2 > 0 & (comp_sig[,paste0(i,"_DP_1")]+comp_sig[,paste0(i,"_DP_2")]+comp_sig[,paste0(i,"_DP_3")])/3 < 0,])
+    
+    comp_anno = comp_table[,c("chr","start","end", paste0(i,"_DMSO"), paste0(i,"_DP"))]
+    comp_anno$anno = ifelse(paste0(comp_anno$chr,":",comp_anno$start,"_",comp_anno$end) %in%               paste0(sigAB$chr,":",sigAB$start,"_",sigAB$end), "strong_AtoB",
+            ifelse(paste0(comp_anno$chr,":",comp_anno$start,"_",comp_anno$end) %in%               paste0(sigBA$chr,":",sigBA$start,"_",sigBA$end), "strong_BtoA",
+            ifelse(comp_anno[,4]>0 & comp_anno[,5]<0, "weak_AtoB",
+            ifelse(comp_anno[,4]<0 & comp_anno[,5]>0, "weak_BtoA",
+            ifelse(comp_anno[,4]>0 & comp_anno[,5]>0, "AtoA","BtoB")))))
+  } else if (i %in% c("NHA","qNHA")) {
+    comp_sig = read.table(paste0("comp_call_VC_SQRT_flipped/",i,"_compartment.sig.tsv"), header=T)
+    sigBA=(comp_sig[comp_sig[,paste0(i,"_DMSO")] < 0 & comp_sig[,paste0(i,"_DP")] > 0,])
+    sigAB=(comp_sig[comp_sig[,paste0(i,"_DMSO")] > 0 & comp_sig[,paste0(i,"_DP")] < 0,])
+    
+    comp_anno = comp_table[,c("chr","start","end", paste0(i,"_DMSO"), paste0(i,"_DP"))]
+    comp_anno$anno = ifelse(paste0(comp_anno$chr,":",comp_anno$start,"_",comp_anno$end) %in% paste0(sigAB$chr,":",sigAB$start,"_",sigAB$end), "strong_AtoB",
+            ifelse(paste0(comp_anno$chr,":",comp_anno$start,"_",comp_anno$end) %in% paste0(sigBA$chr,":",sigBA$start,"_",sigBA$end), "strong_BtoA",
+            ifelse(comp_anno[,4]>0 & comp_anno[,5]<0, "weak_AtoB",
+            ifelse(comp_anno[,4]<0 & comp_anno[,5]>0, "weak_BtoA",
+            ifelse(comp_anno[,4]>0 & comp_anno[,5]>0, "AtoA","BtoB")))))
+  } else {
+    comp_sig = read.table(paste0("../BRep/comp_call_VC_SQRT_flipped/",i,"_BRep_compartment.sig.tsv"), header=T)
+    sigBA=(comp_sig[(comp_sig[,paste0(i,"_DMSO_1")]+comp_sig[,paste0(i,"_DMSO_2")])/2 < 0 & (comp_sig[,paste0(i,"_DP_1")]+comp_sig[,paste0(i,"_DP_2")])/2 > 0,])
+    sigAB=(comp_sig[(comp_sig[,paste0(i,"_DMSO_1")]+comp_sig[,paste0(i,"_DMSO_2")])/2 > 0 & (comp_sig[,paste0(i,"_DP_1")]+comp_sig[,paste0(i,"_DP_2")])/2 < 0,])
+    
+    comp_anno = comp_table[,c("chr","start","end", paste0(i,"_DMSO"), paste0(i,"_DP"))]
+    comp_anno$anno = ifelse(paste0(comp_anno$chr,":",comp_anno$start,"_",comp_anno$end) %in%               paste0(sigAB$chr,":",sigAB$start,"_",sigAB$end), "strong_AtoB",
+            ifelse(paste0(comp_anno$chr,":",comp_anno$start,"_",comp_anno$end) %in%               paste0(sigBA$chr,":",sigBA$start,"_",sigBA$end), "strong_BtoA",
+            ifelse(comp_anno[,4]>0 & comp_anno[,5]<0, "weak_AtoB",
+            ifelse(comp_anno[,4]<0 & comp_anno[,5]>0, "weak_BtoA",
+            ifelse(comp_anno[,4]>0 & comp_anno[,5]>0, "AtoA","BtoB")))))
+  }
+  colnames(comp_anno) = c("chr","start","end","DMSO","DP","anno")
+  comp_anno$cell = i
+  comp_anno_all=rbind(comp_anno_all,comp_anno)
+}
+
+comp_anno_all$anno = factor(comp_anno_all$anno,levels = c("AtoA","strong_AtoB","weak_AtoB","weak_BtoA","strong_BtoA","BtoB"))
+
+stat.test <- comp_anno_all %>%
+  group_by(cell) %>%
+  t_test(DMSO ~ anno) %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance()
+stat.test
+stat.test1=stat.test[c(1,2,6,13,14,15,16,17,21,28,29,30,31,32,36,43,44,45,46,47,51,58,59,60,61,62,66,73,74,75),]
+
+p = ggboxplot(comp_anno_all, x = "anno", y = "DMSO", outliers = FALSE,
+          color = "anno", palette = "Dark2",
+          #add = "jitter",
+          facet.by = "cell", short.panel.labs = TRUE, xlab = "Compartment Annotation", ylab = "Initial State (Eiganvalue in DMSO)") + stat_pvalue_manual(stat.test1[1:3,], label = "p.adj.signif", y.position = 2, step.increase = 0.1) +
+  stat_pvalue_manual(stat.test1[4:6,], label = "p.adj.signif", y.position = 2, step.increase = 0.1) +
+  stat_pvalue_manual(stat.test1[7:9,], label = "p.adj.signif", y.position = 2, step.increase = 0.1) +
+  stat_pvalue_manual(stat.test1[10:12,], label = "p.adj.signif", y.position = 2, step.increase = 0.1) +
+  stat_pvalue_manual(stat.test1[13:15,], label = "p.adj.signif", y.position = 2, step.increase = 0.1) +
+  stat_pvalue_manual(stat.test1[16:18,], label = "p.adj.signif", y.position = 2, step.increase = 0.1) +
+  stat_pvalue_manual(stat.test1[19:21,], label = "p.adj.signif", y.position = 2, step.increase = 0.1) +
+  stat_pvalue_manual(stat.test1[22:24,], label = "p.adj.signif", y.position = 2, step.increase = 0.1) +
+  stat_pvalue_manual(stat.test1[25:27,], label = "p.adj.signif", y.position = 2, step.increase = 0.1) +
+  stat_pvalue_manual(stat.test1[28:30,], label = "p.adj.signif", y.position = 2, step.increase = 0.1) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.1))) +
+  theme(text = element_text(size = 14), axis.text.x = element_text(size = 10, angle = 45, hjust = 1), legend.position = "none") +
+  scale_color_manual(values = c("AtoA" = "#1B9E77FF", "BtoB" = "#D95F02FF", "strong_AtoB" = "#7570B3FF", "weak_AtoB" = "#66A61EFF",
+                                "strong_BtoA" = "#E7298AFF", "weak_BtoA" = "#E6AB02FF"))
+Supp_2A = p
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/compartment_initial_eigan.pdf"))
+print(p)
+dev.off()
+
+png(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/compartment_initial_eigan.png"))
+print(p)
+dev.off()
+
+#Compartment values by switch/unchanged
+comp_anno_all$switch = ifelse((comp_anno_all$anno=="strong_BtoA"), "strong_BtoA", ifelse(comp_anno_all$anno=="strong_AtoB", "strong_AtoB","Unchanged"))
+comp_anno_all$switch = factor(comp_anno_all$switch,levels = c("Unchanged","strong_AtoB","strong_BtoA"))
+
+comp_anno_all <- comp_anno_all %>%
+  dplyr::mutate(abs_DMSO = abs(DMSO))
+
+comparisons <- list(
+  c("Unchanged", "strong_AtoB"),
+  c("Unchanged", "strong_BtoA")
+)
+
+pvals <- comp_anno_all %>%
+  group_by(cell) %>%
+  t_test(
+    abs_DMSO ~ switch,
+    comparisons = comparisons,
+    #alternative = "greater",
+    p.adjust.method = "BH"
+  )
+
+y_max <- max(comp_anno_all$DMSO, na.rm = TRUE)
+
+pvals <- pvals %>%
+  mutate(
+    x = group2,                      # where stars go
+    y.position = y_max * 1.1         # base height
+  ) %>%
+  group_by(x)
+
+p <- ggplot(comp_anno_all,
+            aes(x = switch, y = DMSO, fill = cell)) +
+  geom_violin(scale = "width", position = position_dodge(1)) +
+  geom_boxplot(width = 0.05, outlier.shape = NA,
+               position = position_dodge(1)) +
+  scale_fill_brewer(palette = "Set2") +
+  theme(text = element_text(size = 14), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black")) +
+  xlab("Compartment Annotation") +
+  ylab("Eigenvalue in DMSO") +
+  labs(fill = "Cell Line") +
+  geom_hline(yintercept = 0, linetype = "dashed")
+
+p = p +
+  geom_text(
+    data = pvals,
+    aes(
+      x = x,
+      y = y.position,
+      label = p.adj.signif,
+      group = cell
+    ),
+    position = position_dodge(width = 1),
+    vjust = 0,
+    size = 4
+  )
+p
+
+Fig_1D = p
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/compartment_initial_eigan_simple.pdf"))
+print(p)
+dev.off()
+
+png(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/compartment_initial_eigan_simple.png"))
+print(p)
+dev.off()
+
+```
+
+```{r}
+###Other compartment analysis
+#ATAC overlap
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/1_compartment/mega/")
+files=list.files("../overlap/atac_rna/comp_atac_avg/", pattern = "bed")
+comp_atac=read.table(paste0("../overlap/atac_rna/comp_atac_avg/",files[[1]]))
+colnames(comp_atac) = c("chr","start","end","bin",paste0(strsplit(files[[1]],"_comp")[[1]][1]))
+for (i in 2:20) {
+  temp <- read.table(paste0("../overlap/atac_rna/comp_atac_avg/",files[[i]]))
+  comp_atac=cbind(comp_atac,temp[,5])
+  colnames(comp_atac)[i+4] = paste0(strsplit(files[[i]],"_comp")[[1]][1])
+}
+
+all_bins = paste0(comp_anno$chr,":",comp_anno$start,"-",comp_anno$end)
+comp_atac = comp_atac[comp_atac$bin %in% all_bins,]
+
+comp_atac_long <- data.frame(chr=c(rep(comp_atac$chr,5)),
+                             start=c(rep(comp_atac$start,5)),
+                             end=c(rep(comp_atac$end,5)),
+                             DMSO_1=c(comp_atac$B36_DMSO_1,comp_atac$B49_DMSO_1,comp_atac$B66_DMSO_1,comp_atac$NHA_DMSO_1,comp_atac$qNHA_DMSO_1),
+                             DMSO_2=c(comp_atac$B36_DMSO_2,comp_atac$B49_DMSO_2,comp_atac$B66_DMSO_2,comp_atac$NHA_DMSO_2,comp_atac$qNHA_DMSO_2),
+                             DP_1=c(comp_atac$B36_DP_1,comp_atac$B49_DP_1,comp_atac$B66_DP_1,comp_atac$NHA_DP_1,comp_atac$qNHA_DP_1),
+                             DP_2=c(comp_atac$B36_DP_2,comp_atac$B49_DP_2,comp_atac$B66_DP_2,comp_atac$NHA_DP_2,comp_atac$qNHA_DP_2))
+
+comp_atac_long = cbind(comp_atac_long,comp_anno_all)
+comp_atac_long$DMSO = (comp_atac_long$DMSO_1*1000+comp_atac_long$DMSO_2*1000)/2
+comp_atac_long$DP = (comp_atac_long$DP_1*1000+comp_atac_long$DP_2*1000)/2
+comp_atac_long=comp_atac_long[,c(1:7,11:14)]
+comp_atac_long$delta_atac = comp_atac_long$DP-comp_atac_long$DMSO
+comp_atac_long$bin = paste0(comp_atac_long$chr, ":", comp_atac_long$start, "-", comp_atac_long$end)
+
+stat.test <- comp_atac_long %>%
+  group_by(cell) %>%
+  t_test(delta_atac ~ anno) %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance()
+stat.test
+stat.test1=stat.test[stat.test$group2=="BtoB",]
+stat.test1 = stat.test1 %>% add_xy_position(fun = "max", x = "anno")
+
+p = ggboxplot(comp_atac_long, x = "anno", y = "delta_atac",
+          color = "anno", palette = "Dark2", outliers = FALSE, 
+          #add = "jitter",
+          facet.by = "cell", scales = "free_y", short.panel.labs = TRUE, xlab = "Compartment Annotation", ylab = "Delta ATAC Signal (DP - DMSO)") +
+  theme(text = element_text(size = 14), axis.text.x = element_text(size = 10, angle = 45, hjust = 1), legend.position = "none") + 
+  stat_pvalue_manual(stat.test1[stat.test1$cell=="B36",], label = "p.adj.signif", y.position = 35, x = "group1", size = 3, remove.bracket = TRUE, hide.ns = TRUE) + 
+  stat_pvalue_manual(stat.test1[stat.test1$cell=="B49",], label = "p.adj.signif", y.position = 50, x = "group1", size = 3, remove.bracket = TRUE, hide.ns = TRUE) +
+  stat_pvalue_manual(stat.test1[stat.test1$cell=="B66",], label = "p.adj.signif", y.position = 50, x = "group1", size = 3, remove.bracket = TRUE, hide.ns = TRUE) + 
+  stat_pvalue_manual(stat.test1[stat.test1$cell=="NHA",], label = "p.adj.signif", y.position = 70, x = "group1", size = 3, remove.bracket = TRUE, hide.ns = TRUE) + 
+  stat_pvalue_manual(stat.test1[stat.test1$cell=="qNHA",], label = "p.adj.signif", y.position = 30, x = "group1", size = 3, remove.bracket = TRUE, hide.ns = TRUE) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.1))) +
+   scale_color_manual(values = c("AtoA" = "#1B9E77FF", "BtoB" = "#D95F02FF", "strong_AtoB" = "#7570B3FF", "weak_AtoB" = "#66A61EFF",
+                                 "strong_BtoA" = "#E7298AFF", "weak_BtoA" = "#E6AB02FF"))
+p
+Supp_2C = p
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/compartment_delta_atac.pdf"))
+print(p)
+dev.off()
+
+png(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/compartment_delta_atac.png"))
+print(p)
+dev.off()
+
+#stat.test <- comp_atac_long %>%
+#  group_by(cell) %>%
+#  t_test(delta_atac ~ switch) %>%
+#  adjust_pvalue(method = "bonferroni") %>%
+#  add_significance()
+#stat.test
+#
+#ggplot(comp_atac_long, aes(x = cell, y = delta_atac, fill = switch)) + geom_violin(position=position_dodge(0.85)) +
+#geom_boxplot(width=0.3, outlier.shape = NA, position=position_dodge(0.85)) + scale_fill_brewer(palette = "Set2") + theme(panel.grid.major = element_blank(), #panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))
+
+```
+
+```{r}
+#RNA overlap
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/1_compartment/mega/")
+files=list.files("../overlap/atac_rna/DEG/", pattern = "shrinkage_DEGs_compartment.bed")
+comp_rna=data.frame()
+for (i in 1:length(files)) {
+  temp=read.table(paste0("../overlap/atac_rna/DEG/",files[[i]]))
+  temp$cell = strsplit(files[[i]],"_")[[1]][1]
+  strong_AtoB=comp_atac_long[comp_atac_long$cell==strsplit(files[[i]],"_")[[1]][1] & comp_atac_long$anno=="strong_AtoB","bin"]
+  strong_BtoA=comp_atac_long[comp_atac_long$cell==strsplit(files[[i]],"_")[[1]][1] & comp_atac_long$anno=="strong_BtoA","bin"]
+  AtoA=comp_atac_long[comp_atac_long$cell==strsplit(files[[i]],"_")[[1]][1] & comp_atac_long$anno=="AtoA","bin"]
+  BtoB=comp_atac_long[comp_atac_long$cell==strsplit(files[[i]],"_")[[1]][1] & comp_atac_long$anno=="BtoB","bin"]
+  weak_AtoB=comp_atac_long[comp_atac_long$cell==strsplit(files[[i]],"_")[[1]][1] & comp_atac_long$anno=="weak_AtoB","bin"]
+  weak_BtoA=comp_atac_long[comp_atac_long$cell==strsplit(files[[i]],"_")[[1]][1] & comp_atac_long$anno=="weak_BtoA","bin"]
+  
+  temp$anno=ifelse(temp$V4 %in% strong_AtoB, "strong_AtoB", ifelse(temp$V4 %in% strong_BtoA, "strong_BtoA", ifelse(temp$V4 %in% AtoA, "AtoA", ifelse(temp$V4 %in% BtoB, "BtoB", ifelse(temp$V4 %in% weak_BtoA, "weak_BtoA", "weak_AtoB")))))
+  comp_rna=rbind(comp_rna,temp)
+}
+
+comp_rna$switch = ifelse((comp_rna$anno=="strong_BtoA"), "strong_BtoA", ifelse(comp_rna$anno=="strong_AtoB", "strong_AtoB","Unchanged"))
+comp_rna$switch = factor(comp_rna$switch,levels = c("Unchanged","strong_AtoB","strong_BtoA"))
+comp_rna_sig=comp_rna[comp_rna$V14 < 0.05,c(9,11,16:18)] %>% unique()
+
+stat.test <- comp_rna_sig %>%
+  group_by(cell) %>%
+  t_test(V11 ~ switch) %>%
+  #adjust_pvalue(method = "bonferroni") %>%
+  add_significance() %>% add_xy_position(fun = "max", x = "switch", group="cell", dodge = 0.85)
+stat.test
+
+comp_rna_sig_plot = comp_rna_sig[-5 <= comp_rna_sig$V11 & comp_rna_sig$V11 <= 5,]
+p = ggplot(comp_rna_sig_plot, aes(x = switch, y = V11, fill = cell)) + geom_violin(scale = "width", position=position_dodge(0.85), width = 0.7) + geom_boxplot(width=0.05, outlier.shape = NA, position=position_dodge(0.85)) + stat_pvalue_manual(stat.test[stat.test$group1=="Unchanged",], label = "p.adj.signif", y.position = 5.25, size = 4, remove.bracket = TRUE, hide.ns = TRUE) + geom_boxplot(width=0.1, outlier.shape = NA, position=position_dodge(0.85)) + scale_fill_brewer(palette = "Set2") + theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black")) + xlab("Compartment Annotation") + ylab("RNA log2FoldChange (DP/DMSO)") + labs(fill = "Cell Line") + geom_hline(yintercept=0, linetype = "dashed") + coord_cartesian(ylim = c(-5, 5)) 
+p
+Supp_2D = p
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/compartment_FC_rna.pdf"))
+print(p)
+dev.off()
+
+png(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/compartment_FC_rna.png"))
+print(p)
+dev.off()
+
+h_df <- msigdbr(species = "Homo sapiens", category = "H") %>% dplyr::select(gs_name, gene_symbol)
+#comp_switch_genes_msig = h_df[h_df$gene_symbol %in% comp_rna[comp_rna$anno=="strong_BtoA" & comp_rna$V14 < 0.05,"V9"],]
+comp_switch_genes_msig = h_df[h_df$gene_symbol %in% comp_rna[comp_rna$anno=="strong_BtoA","V9"],]
+make_heatmap <- function(filter_condition, show_anno_name = TRUE) {
+  
+  shared_genes <- comp_rna %>%
+    dplyr::filter(
+      anno %in% c("strong_BtoA", "weak_BtoA"),
+      cell %in% c("B36", "B49", "B66"),
+      !!rlang::parse_expr(filter_condition)
+    ) %>%
+    dplyr::group_by(V9) %>%
+    dplyr::summarise(n_cells = dplyr::n_distinct(cell), .groups = "drop") %>%
+    dplyr::filter(n_cells >= 2) %>%
+    dplyr::pull(V9)
+  
+  comp_switch_genes_msig <- h_df[h_df$gene_symbol %in% shared_genes, ]
+  comp_switch_genes_msig$category = ifelse(comp_switch_genes_msig$gs_name %in% c("HALLMARK_APICAL_JUNCTION","HALLMARK_APICAL_SURFACE","HALLMARK_PEROXISOME"), "cellular_component",ifelse(
+    comp_switch_genes_msig$gs_name %in% c("HALLMARK_ADIPOGENESIS","HALLMARK_ANGIOGENESIS","HALLMARK_EPITHELIAL_MESENCHIMAL_TRANSITION", "HALLMARK_MYOGENESIS","HALLMARK_SPERMATOGENESIS","HALLMARK_PANCREAS_BETA_CELL"), "development", ifelse(
+      comp_switch_genes_msig$gs_name %in% c("HALLMARK_DNA_REPAIR","HALLMARK_UV_RESPONSE_DOWN","HALLMARK_UV_RESPONSE_UP"), "DNA_damage", ifelse(
+        comp_switch_genes_msig$gs_name %in% c("HALLMARK_ALLOGRAFT_REJECTION","HALLMARK_COAGULATION","HALLMARK_COMPLEMENT","HALLMARK_INTERFERON_ALPHA_RESPONSE","HALLMARK_INTERFERON_GAMMA_RESPONSE","HALLMARK_IL6_JAK_STAT3_SIGNALING","HALLMARK_INFLAMMATORY_RESPONSE"), "immune", ifelse(
+          comp_switch_genes_msig$gs_name %in% c("HALLMARK_BILE_ACID_METABOLISM","HALLMARK_CHOLESTEROL_HOMEOSTASIS","HALLMARK_FATTY_ACID_METABOLISM","HALLMARK_GLYCOLYSIS","HALLMARK_HEME_METABOLISM","HALLMARK_OXIDATIVE_PHOSPHORYLATION","HALLMARK_XENOBIOTIC_METABOLISM"), "metabolism", ifelse(
+            comp_switch_genes_msig$gs_name %in% c("HALLMARK_APOPTOSIS","HALLMARK_HYPOXIA","HALLMARK_PROTEIN_SECRETION","HALLMARK_UNFOLDED_PROTEIN_RESPONSE","HALLMARK_REACTIVE_OXYGEN_SPECIES_PATHWAY"), "pathway", ifelse(
+              comp_switch_genes_msig$gs_name %in% c("HALLMARK_E2F_TARGETS","HALLMARK_G2M_CHECKPOINT","HALLMARK_MYC_TARGETS_V1","HALLMARK_MYC_TARGETS_V2","HALLMARK_P53_PATHWAY","HALLMARK_MITOTIC_SPINDLE"), "proliferation", ifelse(
+                comp_switch_genes_msig$gs_name %in% c("HALLMARK_ANDROGEN_RESPONSE","HALLMARK_ESTROGEN_RESPONSE_EARLY","HALLMARK_ESTROGEN_RESPONSE_LATE","HALLMARK_IL2_JAK_STAT5_SIGNALING","HALLMARK_KRAS_SIGNALING_UP","HALLMARK_KRAS_SIGNALING_DN","HALLMARK_MTORC1_SIGNALING","HALLMARK_NOTCH_SIGNALING","HALLMARK_PI3K_AKT_MTOR_SIGNALING","HALLMARK_HEDGEHOG_SIGNALING","HALLMARK_TGF_BETA_SIGNALING","HALLMARK_TNFA_SIGNALING_VIA_NFKB","HALLMARK_WNT_BETA_CATENIN_SIGNALING"), "signaling", "other"
+              ))))))))
+  rna_counts = data.frame() 
+  files=list.files("../../rnaseq/1_DESeq2/", pattern = "normcounts_matrix") 
+  for (i in 1:length(files)) { 
+    temp=read.table(paste0("../../rnaseq/1_DESeq2/",files[[i]])) 
+    if (i==1) { 
+      rna_counts = temp 
+    } else { 
+      rna_counts = merge(rna_counts, temp, by=0) 
+      rna_counts = column_to_rownames(rna_counts, "Row.names") 
+    } 
+  }
+  
+  # keep your category assignment
+  comp_switch <- comp_switch_genes_msig
+  
+  pathway_genes <- unique(comp_switch$gene_symbol)
+  
+  rna_counts1 <- rna_counts[rownames(rna_counts) %in% pathway_genes, ]
+  
+  gene_pathway <- setNames(comp_switch[[3]], comp_switch[[2]])
+  pathway_vec <- gene_pathway[rownames(rna_counts1)]
+  
+  ord <- order(pathway_vec)
+  rna_counts1 <- rna_counts1[ord, ]
+  pathway_vec <- pathway_vec[ord]
+  
+  pathways <- unique(pathway_vec)
+  
+  pathway_cols <- setNames(
+    colorRampPalette(RColorBrewer::brewer.pal(9, "Set3"))(length(pathways)),
+    pathways
+  )
+  
+  row_anno <- rowAnnotation(
+    Process = pathway_vec,
+    col = list(Process = pathway_cols),
+    show_annotation_name = show_anno_name
+  )
+  
+  mat <- as.matrix(rna_counts1)
+  stopifnot(ncol(mat) %% 2 == 0)
+  
+  groups <- split(seq_len(ncol(mat)), ceiling(seq_len(ncol(mat)) / 2))
+  
+  mat_avg <- do.call(
+    cbind,
+    lapply(groups, function(cols) {
+      rowMeans(mat[, cols, drop = FALSE])
+    })
+  )
+  
+  # extract base names (remove final _BRep1 / _BRep2 etc.)
+  new_names <- sapply(groups, function(cols) {
+    sub("_BRep[0-9]+$", "", colnames(mat)[cols[1]])
+  })
+  
+  colnames(mat_avg) <- new_names
+  scaled_rna <- t(scale(t(mat_avg)))
+  
+  col_fun = circlize::colorRamp2(c(-3, 0, 3), c("lightblue", "white", "red"))
+  
+  Heatmap(
+    scaled_rna,
+    name = "Scaled RNA",
+    col = col_fun,
+    left_annotation = row_anno,
+    show_row_names = FALSE,
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    heatmap_legend_param = list(
+    title_gp = gpar(fontsize = 14),
+    labels_gp = gpar(fontsize = 14)
+  )
+  )
+}
+
+ht_neg <- make_heatmap("V11 < 0", show_anno_name = FALSE)  # top → hide
+ht_pos <- make_heatmap("V11 > 0", show_anno_name = TRUE)   # bottom → keep
+
+ht_pos@heatmap_param$show_heatmap_legend <- FALSE
+
+p = draw(
+  ht_neg %v% ht_pos,
+  merge_legend = TRUE,
+  heatmap_legend_side = "right",
+  annotation_legend_side = "right",
+  align_heatmap_legend = "heatmap_top",
+)
+p
+Fig_1F = p
+
+plots=list()
+comp_rna_sig=comp_rna[comp_rna$V14 < 0.05 & abs(comp_rna$V11) > 1,c(9,11,16:18)] %>% unique()
+comp_GO = list()
+comp_rna_sig_overlap = data.frame()
+for (i in c("B36","B49","B66")) {
+  comp_rna_sig_sorted <- comp_rna_sig[order(comp_rna_sig$V11, decreasing = TRUE), ] %>% unique()
+  comp_rna_sig_sorted = comp_rna_sig_sorted[(comp_rna_sig_sorted$switch!="Unchanged") & comp_rna_sig_sorted$cell==i,1:2] %>% unique()
+  
+  yy <- enrichGO(comp_rna_sig_sorted$V9, 'org.Hs.eg.db', keyType = "SYMBOL", ont="BP", pvalueCutoff=0.05, pAdjustMethod = "BH")
+  p = dotplot(yy, showCategory=15, font.size = 8)
+  plots[[length(plots) + 1]] <- p
+  
+  pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/",i,"compartment_switch_GO.pdf"))
+  print(p)
+  dev.off()
+
+  png(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/",i,"compartment_switch_GO.png"))
+  print(p)
+  dev.off()
+  
+  comp_GO = append(comp_GO, yy, after = length(comp_GO))
+  names(comp_GO)[length(comp_GO)] <- i
+}
+Supp_2E = plots[[1]]
+Supp_2F = plots[[2]]
+Supp_2G = plots[[3]]
+
+#merged_go = merge_result(comp_GO)
+#p = dotplot(merged_go, showCategory=15, font.size = 6) + theme(legend.text=element_text(size=5))
+#
+#pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/tad_merged_gsea_rna.pdf"))
+#print(p)
+#dev.off()
+
+```
+
+```{r}
+###Methylation overlap
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/1_compartment/overlap/wgbs/")
+files=list.files("cov/", pattern = "compartment.bed")
+comp_methyl = data.frame()
+comp_methyl_5x = data.frame()
+for (i in 1:length(files)) {
+  temp = read.table(paste0("cov/",files[[i]]))
+  temp$V11 = temp$V9 + temp$V10
+  temp_filtered = temp[temp$V11 >=5,]
+  
+  temp <- temp %>% group_by(V1,V2,V3,V4) %>% dplyr::summarise(methylC = sum(V9, na.rm = TRUE), unmethylC = sum(V10, na.rm = TRUE), totalC = sum(V11, na.rm = TRUE), count=dplyr::n())
+  temp_filtered <- temp_filtered %>% group_by(V1,V2,V3,V4) %>% dplyr::summarise(methylC = sum(V9, na.rm = TRUE), unmethylC = sum(V10, na.rm = TRUE), totalC = sum(V11, na.rm = TRUE), count=dplyr::n())
+  
+  strong_AtoB=comp_atac_long[comp_atac_long$cell==strsplit(files[[i]],"_")[[1]][3] & comp_atac_long$anno=="strong_AtoB","bin"]
+  strong_BtoA=comp_atac_long[comp_atac_long$cell==strsplit(files[[i]],"_")[[1]][3] & comp_atac_long$anno=="strong_BtoA","bin"]
+  AtoA=comp_atac_long[comp_atac_long$cell==strsplit(files[[i]],"_")[[1]][3] & comp_atac_long$anno=="AtoA","bin"]
+  BtoB=comp_atac_long[comp_atac_long$cell==strsplit(files[[i]],"_")[[1]][3] & comp_atac_long$anno=="BtoB","bin"]
+  weak_AtoB=comp_atac_long[comp_atac_long$cell==strsplit(files[[i]],"_")[[1]][3] & comp_atac_long$anno=="weak_AtoB","bin"]
+  weak_BtoA=comp_atac_long[comp_atac_long$cell==strsplit(files[[i]],"_")[[1]][3] & comp_atac_long$anno=="weak_BtoA","bin"]
+  
+  temp$cell = strsplit(paste0("cov/",files[[i]]),"_")[[1]][3]
+  temp$treatment = strsplit(paste0("cov/",files[[i]]),"_")[[1]][4]
+  temp$rep = strsplit(paste0("cov/",files[[i]]),"_")[[1]][5]
+  temp$anno=ifelse(temp$V4 %in% strong_AtoB, "strong_AtoB", ifelse(temp$V4 %in% strong_BtoA, "strong_BtoA", ifelse(temp$V4 %in% AtoA, "AtoA", ifelse(temp$V4 %in% BtoB, "BtoB", ifelse(temp$V4 %in% weak_BtoA, "weak_BtoA", "weak_AtoB")))))
+  comp_methyl = rbind(comp_methyl, temp)
+  
+  temp_filtered$cell = strsplit(paste0("cov/",files[[i]]),"_")[[1]][3]
+  temp_filtered$treatment = strsplit(paste0("cov/",files[[i]]),"_")[[1]][4]
+  temp_filtered$rep = strsplit(paste0("cov/",files[[i]]),"_")[[1]][5]
+  temp_filtered$anno=ifelse(temp_filtered$V4 %in% strong_AtoB, "strong_AtoB", ifelse(temp_filtered$V4 %in% strong_BtoA, "strong_BtoA", ifelse(temp_filtered$V4 %in% AtoA, "AtoA", ifelse(temp_filtered$V4 %in% BtoB, "BtoB", ifelse(temp_filtered$V4 %in% weak_BtoA, "weak_BtoA", "weak_AtoB")))))
+  comp_methyl_5x = rbind(comp_methyl_5x, temp_filtered)
+}
+
+comp_methyl$percent_methyl = comp_methyl$methylC/comp_methyl$totalC
+comp_methyl_5x$percent_methyl = comp_methyl_5x$methylC/comp_methyl_5x$totalC
+
+stat.test <- comp_methyl[comp_methyl$treatment=="DMSO",] %>%
+  group_by(cell) %>%
+  t_test(percent_methyl ~ anno) %>%
+  #adjust_pvalue(method = "bonferroni") %>%
+  add_significance() %>% add_xy_position(fun = "max", x = "anno", group="cell")
+stat.test
+
+comp_methyl$anno = factor(comp_methyl$anno,levels = c("AtoA","strong_AtoB","weak_AtoB","weak_BtoA","strong_BtoA","BtoB"))
+ggplot(comp_methyl[comp_methyl$treatment=="DMSO",], aes(x = anno, y = percent_methyl, fill = cell)) + geom_violin() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))
+
+comp_methyl$anno_sig = ifelse(comp_methyl$anno == "strong_BtoA", "strong_BtoA", ifelse(comp_methyl$anno == "strong_AtoB", "strong_AtoB",
+                       ifelse(comp_methyl$anno %in% c("AtoA","weak_AtoB"), "Unchanged_A", "Unchanged")))
+
+stat.test <- comp_methyl[comp_methyl$treatment=="DMSO",] %>%
+  group_by(cell) %>%
+  t_test(percent_methyl ~ anno) %>%
+  adjust_pvalue(method = "bonferroni") %>%
+  add_significance() %>% add_xy_position(fun = "max", x = "anno", group="cell")
+stat.test
+stat.test1=stat.test[stat.test$group2=="BtoB",]
+stat.test1 = stat.test1 %>% add_xy_position(fun = "max", x = "anno")
+
+p = ggplot(comp_methyl[comp_methyl$treatment=="DMSO",], aes(x = anno, y = percent_methyl, fill = anno)) + geom_violin(scale = "width", position=position_dodge(1)) + geom_boxplot(width=0.05, outlier.shape = NA, position=position_dodge(1)) + scale_fill_brewer(palette = "Dark2") + theme(text = element_text(size = 14), axis.text.x = element_text(size = 10, angle = 45, hjust = 1), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black")) + xlab("") + ylab("Initial State (Fraction Methylation)") + facet_wrap(~cell) + stat_pvalue_manual(stat.test1[stat.test1$cell=="B36",], label = "p.adj.signif", y.position = 1.1, x = "group1", size = 3, remove.bracket = TRUE, hide.ns = TRUE) + labs(fill = "Compartment Type") +
+  stat_pvalue_manual(stat.test1[stat.test1$cell=="B49",], label = "p.adj.signif", y.position = 1.1, x = "group1", size = 3, remove.bracket = TRUE, hide.ns = TRUE) +
+  stat_pvalue_manual(stat.test1[stat.test1$cell=="B66",], label = "p.adj.signif", y.position = 1.1, x = "group1", size = 3, remove.bracket = TRUE, hide.ns = TRUE) + 
+  stat_pvalue_manual(stat.test1[stat.test1$cell=="NHA",], label = "p.adj.signif", y.position = 1.1, x = "group1", size = 3, remove.bracket = TRUE, hide.ns = TRUE) + 
+  stat_pvalue_manual(stat.test1[stat.test1$cell=="qNHA",], label = "p.adj.signif", y.position = 1.1, x = "group1", size = 3, remove.bracket = TRUE, hide.ns = TRUE) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.1))) + 
+  scale_fill_manual(values = c("AtoA" = "#1B9E77FF", "BtoB" = "#D95F02FF", "strong_AtoB" = "#7570B3FF", "weak_AtoB" = "#66A61EFF",
+                                  "strong_BtoA" = "#E7298AFF", "weak_BtoA" = "#E6AB02FF"))
+p
+Fig_1E = p
+
+
+CpG_counts = read.table("50kb_bins_CpGnum.bed")
+test = comp_methyl
+test$count <- CpG_counts$V5[match(test$V4, CpG_counts$V4)]
+
+stat.test <- comp_methyl[comp_methyl$treatment=="DMSO",] %>%
+  group_by(cell) %>%
+  t_test(count ~ anno) %>%
+  #adjust_pvalue(method = "bonferroni") %>%
+  add_significance() %>% add_xy_position(fun = "max", x = "anno", group="cell")
+stat.test
+stat.test1=stat.test[stat.test$group2=="BtoB",]
+stat.test1 = stat.test1 %>% add_xy_position(fun = "max", x = "anno")
+
+ggplot(comp_methyl[test$treatment=="DMSO",], aes(x = anno, y = count, color = anno)) + geom_boxplot(outliers = FALSE) + scale_color_brewer(palette = "Set2") 
+
+p = ggboxplot(comp_methyl[test$treatment=="DMSO",], x = "anno", y = "count",
+          color = "anno", palette = "Dark2", outliers = FALSE, 
+          #add = "jitter",
+          facet.by = "cell", scales = "free_y", short.panel.labs = TRUE, xlab = "Compartment Annotation", ylab = "CpG Count") + theme(text = element_text(size = 14), axis.text.x = element_text(size = 10, angle = 45, hjust = 1), legend.position = "none") + stat_pvalue_manual(stat.test1[stat.test1$cell=="B36",], label = "p.adj.signif", y.position = 2200, x = "group1", size = 3, remove.bracket = TRUE, hide.ns = TRUE) + 
+  stat_pvalue_manual(stat.test1[stat.test1$cell=="B49",], label = "p.adj.signif", y.position = 2200, x = "group1", size = 3, remove.bracket = TRUE, hide.ns = TRUE) +
+  stat_pvalue_manual(stat.test1[stat.test1$cell=="B66",], label = "p.adj.signif", y.position = 1900, x = "group1", size = 3, remove.bracket = TRUE, hide.ns = TRUE) + 
+  stat_pvalue_manual(stat.test1[stat.test1$cell=="NHA",], label = "p.adj.signif", y.position = 3000, x = "group1", size = 3, remove.bracket = TRUE, hide.ns = TRUE) + 
+  stat_pvalue_manual(stat.test1[stat.test1$cell=="qNHA",], label = "p.adj.signif", y.position = 1600, x = "group1", size = 3, remove.bracket = TRUE, hide.ns = TRUE) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.1))) + scale_color_manual(values = c("AtoA" = "#1B9E77FF", "BtoB" = "#D95F02FF", "strong_AtoB" = "#7570B3FF", "weak_AtoB" = "#66A61EFF",
+                                   "strong_BtoA" = "#E7298AFF", "weak_BtoA" = "#E6AB02FF"))
+p
+Supp_2B = p
+
+```
+
+```{r}
+#comp_anno_filtered <- comp_anno_all %>%
+#    #filter(anno %in% c("strong_AtoB", "strong_BtoA") & cell %in% c("B36","B49","B66")) %>%
+#    mutate(
+#        anno = case_when(
+#            anno %in% c("weak_AtoB", "strong_AtoB", "AtoA") ~ "A",
+#            anno %in% c("weak_BtoA", "strong_BtoA", "BtoB") ~ "B",
+#            TRUE ~ anno  # should not happen
+#        )
+#    )
+#
+## 2️⃣ Construct comp_upset
+#comp_upset <- comp_anno_filtered %>%
+#    mutate(bin = paste(chr, start, end, sep = "_"),
+#           anno_cell = paste(anno, cell, sep = "_")) %>%
+#    distinct(bin, anno_cell) %>%
+#    mutate(value = TRUE) %>%
+#    pivot_wider(
+#        names_from = anno_cell,
+#        values_from = value,
+#        values_fill = FALSE
+#    )
+#
+## 3️⃣ Make numeric matrix for UpSetR
+#set_cols <- setdiff(colnames(comp_upset), "bin")
+#plot_df <- as.data.frame(comp_upset[, set_cols])
+#plot_df[] <- lapply(plot_df, as.integer)
+#
+## 4️⃣ Plot
+#UpSetR::upset(
+#  plot_df,
+#  sets = colnames(plot_df),
+#  nsets = length(colnames(plot_df)),
+#  nintersects = 15, order.by = "freq"
+#)
+#
+#
+#
+```
+
+
+```{r}
+comp_anno_filtered <- comp_anno_all %>%
+    filter(anno %in% c("strong_AtoB", "strong_BtoA") & cell %in% c("B36","B49","B66","NHA","qNHA")) %>%
+    mutate(
+        anno = case_when(
+            anno %in% c("weak_AtoB", "strong_AtoB") ~ "AtoB",
+            anno %in% c("weak_BtoA", "strong_BtoA") ~ "BtoA",
+            TRUE ~ anno  # should not happen
+        )
+    )
+
+# Construct comp_upset
+comp_upset <- comp_anno_filtered %>%
+    mutate(bin = paste(chr, start, end, sep = "_"),
+           anno_cell = paste(anno, cell, sep = "_")) %>%
+    distinct(bin, anno_cell) %>%
+    mutate(value = TRUE) %>%
+    pivot_wider(
+        names_from = anno_cell,
+        values_from = value,
+        values_fill = FALSE
+    )
+
+# Make numeric matrix for UpSetR
+set_cols <- setdiff(colnames(comp_upset), "bin")
+plot_df <- as.data.frame(comp_upset[, set_cols])
+plot_df[] <- lapply(plot_df, as.integer)
+
+# Plot
+p = UpSetR::upset(
+  plot_df,
+  sets = c("BtoA_B36","BtoA_B49","BtoA_B66","BtoA_NHA","BtoA_qNHA","AtoB_B36","AtoB_B49","AtoB_B66","AtoB_NHA","AtoB_qNHA"),
+  keep.order = TRUE,
+  nsets = length(colnames(plot_df)),
+  nintersects = 25, order.by = "freq",
+  text.scale = 1.5
+)
+p
+Supp_1G = p
+
+
+```
+
+```{r}
+library(patchwork)
+library(ggplotify)
+library(grid)
+
+#Fig 1
+layout <- "AAAAABBBBBCCCCC#
+           AAAAABBBBBCCCCC#
+           AAAAABBBBBCCCCC#
+           AAAAABBBBBCCCCC#
+           DDDDDEEEEEFFFFFF
+           DDDDDEEEEEFFFFFF
+           DDDDDEEEEEFFFFFF
+           DDDDDEEEEEFFFFFF
+           ##########FFFFFF
+           "
+
+tmp <- tempfile(fileext = ".png")
+png(tmp, width = 8, height = 6, units = "in", res = 600)
+draw(Fig_1F)
+dev.off()
+
+p_img <- png::readPNG(tmp)
+
+p_gg <- ggplot() +
+  annotation_raster(p_img, xmin = 0, xmax = 1, ymin = 0, ymax = 1) +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), clip = "on") +
+  scale_x_continuous(breaks = NULL, expand = c(0, 0)) +
+  scale_y_continuous(breaks = NULL, expand = c(0, 0)) +
+  theme_void() +
+  theme(
+    plot.margin    = margin(0, 0, 0, 0),
+    axis.text      = element_blank(),
+    axis.ticks     = element_blank(),
+    axis.title     = element_blank(),
+    panel.border   = element_blank(),
+    panel.background = element_blank()
+  )
+
+Fig1 <- wrap_plots(Fig_1A, Fig_1B, Fig_1C, Fig_1D, Fig_1E, p_gg, design = layout) &
+    theme(plot.margin = margin(2, 2, 2, 2))
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/Full_Figure1.pdf"), width = 24, height = 12)
+print(Fig1)
+dev.off()
+
+#Supp Fig 1
+layout <- "AAAABBBBCCCCDDDD
+           AAAABBBBCCCCDDDD
+           AAAABBBBCCCCDDDD
+           AAAABBBBCCCCDDDD
+           EEEEFFFFGGGGGGGG
+           EEEEFFFFGGGGGGGG
+           EEEEFFFFGGGGGGGG
+           EEEEFFFFGGGGGGGG
+           "
+Supp_1B_noL = Supp_1B + coord_fixed() + theme(legend.position = "none")
+Supp_1C_noL = Supp_1C + coord_fixed() + theme(legend.position = "none")
+Supp_1D_noL = Supp_1D + coord_fixed() + theme(legend.position = "none")
+Supp_1E_noL = Supp_1E + coord_fixed() + theme(legend.position = "none")
+Supp_1F_noL = Supp_1F + coord_fixed() #+ theme(legend.position = "none")
+p_legend <- cowplot::get_legend(
+  Supp_1C + theme(
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 10)
+  )
+)
+
+tmp <- tempfile(fileext = ".png")
+png(tmp, width = 10, height = 6, units = "in", res = 300)
+print(Supp_1G)
+dev.off()
+
+p_img <- png::readPNG(tmp)
+
+p_gg <- ggplot() +
+  annotation_raster(p_img, xmin = 0, xmax = 1, ymin = 0, ymax = 1) +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), clip = "on") +
+  scale_x_continuous(breaks = NULL, expand = c(0, 0)) +
+  scale_y_continuous(breaks = NULL, expand = c(0, 0)) +
+  theme_void() +
+  theme(
+    plot.margin    = margin(0, 0, 0, 0),
+    axis.text      = element_blank(),
+    axis.ticks     = element_blank(),
+    axis.title     = element_blank(),
+    panel.border   = element_blank(),
+    panel.background = element_blank()
+  )
+
+Supp_Fig1 <- wrap_plots(
+    Supp_1A, Supp_1B, Supp_1C_noL, Supp_1D_noL,
+    Supp_1E_noL, Supp_1F_noL, p_gg,
+    design = layout
+  ) +
+  plot_layout(widths = c(1, 1, 1.4, 1.4),   # give C and D more width
+              heights = c(1, 1.4))
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/Full_Supp_Figure1.pdf"), width = 24, height = 12)
+print(Supp_Fig1)
+dev.off()
+
+
+#Supp Fig 2
+layout <- "AAAAAABBBBBBCCCCCC
+           AAAAAABBBBBBCCCCCC
+           AAAAAABBBBBBCCCCCC
+           AAAAAABBBBBBCCCCCC
+           AAAAAABBBBBBCCCCCC
+           DDDDDEEEEFFFFGGGGG
+           DDDDDEEEEFFFFGGGGG
+           DDDDDEEEEFFFFGGGGG
+           DDDDDEEEEFFFFGGGGG
+           DDDDDEEEEFFFFGGGGG
+           DDDDDEEEEFFFFGGGGG
+           "
+
+Supp_Fig2 <- wrap_plots(Supp_2A, Supp_2B, Supp_2C, Supp_2D, 
+                   Supp_2E, Supp_2F, Supp_2G, design = layout) &
+    theme(plot.margin = margin(10, 10, 10, 10))
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/Full_Supp_Figure2.pdf"), width = 24, height = 15)
+print(Supp_Fig2)
+dev.off()
+
+
+```
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

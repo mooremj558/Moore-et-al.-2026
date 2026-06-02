@@ -1,0 +1,767 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+library(VennDiagram)
+library(RColorBrewer)
+library(ChIPseeker)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(clusterProfiler)
+library(plyranges)
+library(tidyr)
+library(ggplot2)
+library(AnnotationHub)
+library(patchwork)
+library(ggplotify)
+library(grid)
+library(magick)
+```
+
+
+```{r}
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/3_CTCF/")
+DMSO_peaks = read.table("1_diffpeaks/GSC_CTCF_downSig_peaks.bed", header = F)
+DP_peaks = read.table("1_diffpeaks/GSC_CTCF_upSig_peaks.bed", header = F)
+stable_peaks = read.table("1_diffpeaks/GSC_CTCF_nonSig_peaks.bed", header = F)
+
+DMSO_peaks$peak = paste0(DMSO_peaks$V1,":",DMSO_peaks$V2,"_",DMSO_peaks$V3)
+DP_peaks$peak = paste0(DP_peaks$V1,":",DP_peaks$V2,"_",DP_peaks$V3)
+stable_peaks$peak = paste0(stable_peaks$V1,":",stable_peaks$V2,"_",stable_peaks$V3)
+
+# Define your sets
+set1 <- c(DMSO_peaks$peak, stable_peaks$peak)
+set2 <- c(DP_peaks$peak, stable_peaks$peak)
+
+# Create a list of sets
+data_list <- list(DMSO = set1, DP = set2)
+
+# Prepare a palette with R colorbrewer:
+myCol <- brewer.pal(2, "Pastel2")
+
+# Chart
+p = venn.diagram(
+        x = list(set1, set2),
+        category.names = c("DP" , "DMSO "),
+        filename = NULL,
+        output=TRUE,
+        
+        # Output features
+        imagetype="png" ,
+        height = 2 , 
+        width = 2 , 
+        resolution = 300,
+        compression = "lzw",
+        units = "in",
+        
+        # Circles
+        lwd = 2,
+        lty = 'blank',
+        fill = myCol[1:2],
+
+        # Numbers
+        cex = 1,
+        fontface = "bold",
+        fontfamily = "sans",
+        
+        # Set names
+        cat.cex = 1,
+        cat.fontface = "bold",
+        cat.default.pos = "outer",
+        cat.pos = c(-25, 25),
+        cat.dist = c(-0.45, -0.45),
+        cat.fontfamily = "sans"
+)
+
+tmp <- tempfile(fileext = ".png")
+png(tmp, width = 3, height = 3, units = "in", res = 600)
+print(p)
+dev.off()
+
+p_img <- png::readPNG(tmp)
+
+p_gg <- ggplot() +
+  annotation_raster(p_img, xmin = 0, xmax = 1, ymin = 0, ymax = 1) +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), clip = "on") +
+  scale_x_continuous(breaks = NULL, expand = c(0, 0)) +
+  scale_y_continuous(breaks = NULL, expand = c(0, 0)) +
+  theme_void() +
+  theme(
+    plot.margin    = margin(0, 0, 0, 0),
+    axis.text      = element_blank(),
+    axis.ticks     = element_blank(),
+    axis.title     = element_blank(),
+    panel.border   = element_blank(),
+    panel.background = element_blank()
+  )
+
+Fig_3A = p_gg
+
+```
+
+```{r}
+###CTCF motifs
+ah <- AnnotationHub()
+query_data <- subset(ah, preparerclass == "CTCF")
+query_data
+
+query_data$dataprovider %>% table()
+CTCF_hg38_all <- query_data[["AH104727"]]
+write.table(CTCF_hg38_all %>% sort() %>% as.data.frame(), 
+            file = "1_diffpeaks/CTCF_hg38_all.bed",
+            sep = "\t", row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+```
+
+```{r}
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/3_CTCF/")
+files=list.files("2_allpeaks_anno/", pattern = "bed")
+plots=list()
+for (i in 1:3) {
+  peak <- readPeakFile(paste0("2_allpeaks_anno/",files[[i]]))
+  
+  peakAnno <- annotatePeak(peak, tssRegion=c(-3000, 3000),
+                         TxDb=txdb, annoDb="org.Hs.eg.db")
+  
+  pdf(paste0("2_allpeaks_anno/", gsub(".bed","_anno.pdf",files[[i]])))
+  plotAnnoPie(peakAnno)
+  dev.off()
+  
+  tmp <- tempfile(fileext = ".png")
+  png(tmp, width = 8, height = 6, units = "in", res = 300)
+  plotAnnoPie(peakAnno)
+  dev.off()
+  
+  p_img <- image_read(tmp)
+  p_img_cropped <- image_trim(p_img)
+  p_gg <- ggplot() +
+    annotation_raster(p_img_cropped, xmin = 0, xmax = 1, ymin = 0, ymax = 1) +
+    coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), clip = "on") +
+    scale_x_continuous(breaks = NULL, expand = c(0, 0)) +
+    scale_y_continuous(breaks = NULL, expand = c(0, 0)) +
+    theme_void() +
+    theme(
+      plot.margin    = margin(0, 0, 0, 0),
+      axis.text      = element_blank(),
+      axis.ticks     = element_blank(),
+      axis.title     = element_blank(),
+      panel.border   = element_blank(),
+      panel.background = element_blank()
+    )
+  plots[[length(plots) + 1]] <- p_gg
+}
+Supp_4A = plots[[1]]
+Supp_4B = plots[[2]]
+Supp_4C = plots[[3]]
+
+
+
+```
+
+```{r}
+library(ggplot2)
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/3_CTCF/")
+files=list.files("3_allpeaks_te/", pattern="*counts.txt")
+
+for (i in 1:1) {
+  counts=read.csv(paste0("3_allpeaks_te/", files[[i]]), sep = "")
+  counts$nonTE=counts$all-counts$TE
+  counts$peaks = c("CTCF Lost","Unchanged","CTCF Gained")
+  
+  # Sample data
+  data <- data.frame(
+    peak = c(counts$peaks, counts$peaks),
+    count = c(counts$TE, counts$nonTE),
+    type = rep(c("TE", "nonTE"), each = 3)
+  )
+  data$peak <- factor(data$peak, levels=c("Unchanged", "CTCF Lost", "CTCF Gained"))
+  
+  # Create the stacked bar plot
+  p = ggplot(data, aes(x = peak, y = count, fill = type)) +
+    geom_bar(stat = "identity", position = "fill") +
+    labs(title = "",
+         x = "Peak Type",
+         y = "Number of Peaks",
+         fill = "Type") + theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+        panel.background = element_blank(), axis.line = element_line(colour = "black")) + 
+  scale_y_continuous(expand = c(0, 0)) + scale_x_discrete(expand = c(0, 0)) 
+  pdf(paste0("3_allpeaks_te/", gsub(".txt",".pdf",files[[i]])))
+  print(p)
+  dev.off()
+}
+Fig_3G = p
+
+files=list.files("3_allpeaks_te/", pattern="*TE_coverage.bed")
+merged_coverage = data.frame()
+for (i in 1:3) {
+  coverage=read.csv(paste0("3_allpeaks_te/", files[[i]]), sep = "", header=F)
+  coverage$peaks = paste0(gsub("_peaks_coverage.bed","",gsub("GSC_CTCF_","",files[[i]])))
+  merged_coverage = rbind(merged_coverage, coverage)
+}
+merged_coverage$peaks = gsub("_withDI_new_25kb_CTCF_TE_coverage.bed","",merged_coverage$peaks)
+merged_coverage$`Boundary Type` = ifelse(merged_coverage$peaks=="dynamic_strengthened_sig", "DP Boundary", ifelse(merged_coverage$peaks=="dynamic_weakened_sig", "DMSO Boundary", "Stable Boundary"))
+merged_coverage$`Boundary Type` <- factor(merged_coverage$`Boundary Type`, levels=c("Stable Boundary", "DMSO Boundary", "DP Boundary"))
+p = ggplot(data = merged_coverage, aes(x = V4, color=`Boundary Type`)) + geom_density(alpha=1, adjust=2, key_glyph = draw_key_path) + ggtitle("") + xlab("Number of TEs with CTCF Motif") + ylab("Density") + theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black")) + scale_color_manual(values = c("black", "#F8766D", "#37a7db"))
+
+pdf(paste0("3_allpeaks_te/bound_CTCF_TEnum.pdf"))
+print(p)
+dev.off()
+
+Supp_4E = p
+
+files=list.files("3_allpeaks_te/", pattern="*TEs.bed")
+te_class = data.frame()
+for (i in 1:3) {
+  te=read.csv(paste0("3_allpeaks_te/", files[[i]]), sep = "", header=F)
+  class_counts = te %>% group_by(V7) %>% dplyr::summarize(count = dplyr::n())
+  class_counts$peaks = paste0(gsub("_peaks_CTCF_TEs.bed","",gsub("GSC_CTCF_","",files[[i]])))
+  te_class = rbind(te_class, class_counts)
+}
+te_class = te_class[te_class$V7 %in% c("DNA","LTR","LINE","SINE","Retroposon"),]
+te_class$peaks = ifelse(te_class$peaks=="downSig", "CTCF Lost", ifelse(te_class$peaks=="upSig", "CTCF Gained", "Unchanged"))
+te_class$peaks <- factor(te_class$peaks, levels=c("Unchanged", "CTCF Lost", "CTCF Gained"))
+p = ggplot(te_class, aes(x=peaks, y=count, fill=V7)) + geom_bar(position="fill", stat="identity", width=0.7) + theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+        panel.background = element_blank(), axis.line = element_line(colour = "black")) + 
+  scale_y_continuous(expand = c(0, 0)) + scale_x_discrete(expand = c(0, 0)) + labs(fill = "TE Class") + xlab("Peak Type") + ylab("Percentage of TEs")
+
+pdf(paste0("3_allpeaks_te/CTCF_TE_class.pdf"))
+print(p)
+dev.off()
+
+Supp_4D = p
+
+```
+
+```{r}
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+# Add Methylation data to the plot for methylation of these regions
+
+methylc <- list.files("/scratch/mmoore/Epitherapy3D/data/wgbs/methylcall/6_track_mergedCG", full.names = TRUE) %>% grep("_DMSO_|_DP_", ., value = TRUE) %>% grep("CG.methylC$", ., value = TRUE)
+for (i in 1:20) {
+  methyl = read.csv(methylc[[i]], sep = "", header = F)
+  colnames(methyl) = c("seqnames", "start", "end", "type", "percent", "strand", "depth")
+  methyl$mC = round(methyl$percent*methyl$depth)
+  methyl = methyl[methyl$seqnames %in% c("chr1", "chr2", "chr3", "chr4", "chr5",
+                                                              "chr6","chr7", "chr8", "chr9", "chr10",
+                                                              "chr11", "chr12", "chr13", "chr14", "chr15",
+                                                              "chr16", "chr17", "chr18", "chr19", "chr20",
+                                                              "chr21", "chr22", "chrX", "chrY"),]
+  methyl_gr = methyl %>% as_granges()
+  
+  methylAnno <- annotatePeak(methyl_gr, tssRegion=c(-3000, 3000),
+                         TxDb=txdb, annoDb="org.Hs.eg.db")
+  
+  methylAnno_df <- methylAnno@anno %>% as.data.frame()
+  
+  df_modified <- methylAnno_df %>%
+  mutate(annotation = ifelse(str_detect(annotation, "Intron"), "Intron", annotation)) %>%
+    mutate(annotation = ifelse(str_detect(annotation, "Exon"), "Exon", annotation))
+
+  
+  collapsed_df <- df_modified %>%
+      group_by(annotation) %>%
+      summarise(
+        Sum_mCG = sum(mC),
+        Sum_CG = sum(depth)
+      )
+  collapsed_df$percent = collapsed_df$Sum_mCG/collapsed_df$Sum_CG
+  
+  p = ggplot(collapsed_df, aes(x=annotation, y=percent, fill = annotation)) + geom_bar(stat = "identity") + ylim(0,1) + theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black"))
+  
+  names=gsub("/scratch/mmoore/Epitherapy3D/data/wgbs/methylcall/6_track_mergedCG/", "", methylc)
+  names=gsub(".CG.methylC.gz","", names)
+  pdf(paste0("4_methyl/", names[[i]], "_anno.pdf"))
+  print(p)
+  dev.off()
+}
+
+```
+
+```{r}
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+# Add Methylation data to the plot for methylation of CTCF peaks
+
+methylc <- list.files("4_methyl/", pattern = "methylC")
+methylc <- methylc[!grepl("2kb.*methylC", methylc)]
+final = data.frame()
+for (i in 1:60) {
+  methyl = read.csv(paste0("4_methyl/", methylc[[i]]), sep = "", header = F)
+  colnames(methyl) = c("chr", "startCTCF", "endCTCF", "seqnames", "start", "end", "type", "percent", "strand", "depth", "overlap")
+  methyl = methyl[methyl$depth >= 5,]
+  methyl$mC = round(methyl$percent*methyl$depth)
+  methyl$ID = paste(methyl$chr,methyl$startCTCF,methyl$endCTCF)
+  
+  collapsed_df <- methyl %>%
+      group_by(ID) %>%
+      dplyr::summarise(
+        Sum_mCG = sum(mC),
+        Sum_CG = sum(depth)
+      )
+  collapsed_df$percent = collapsed_df$Sum_mCG/collapsed_df$Sum_CG
+  name=gsub(".CG.methylC","", methylc[[i]])
+  avg=mean(collapsed_df$percent)
+  row=c(name,avg)
+  final=rbind(final,row)
+}
+colnames(final) = c("sample","averagemC")
+final = separate_wider_delim(final, cols = sample, delim = "_", names = c("tissue", "TF","peaks","type",
+                                                                          "cell","Treatment","rep"))
+
+GSC = final[final$cell == "B36" | final$cell == "B49" | final$cell == "B66",]
+GSC$peaks <- as.factor(GSC$peaks)
+GSC$averagemC <- as.numeric(GSC$averagemC)
+GSC$peaks = ifelse(GSC$peaks=="downSig", "CTCF Lost", ifelse(GSC$peaks=="upSig", "CTCF Gained", "Unchanged"))
+GSC$peaks <- factor(GSC$peaks, levels=c("Unchanged", "CTCF Lost", "CTCF Gained"))
+
+p = ggplot(GSC, aes(x=peaks, y=averagemC, fill=Treatment)) + geom_boxplot(outliers = FALSE) + theme(text = element_text(size = 14),  panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black")) + ylab("Average mC Fraction") + xlab("Peak Type")
+
+pdf("4_methyl/GSC_peak_averagemC.pdf")
+print(p)
+dev.off()
+
+Fig_3D = p
+
+```
+
+
+```{r}
+#library(ChIPseeker)
+#library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+#txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+#library(clusterProfiler)
+#library(plyranges)
+#
+## Add Methylation data to the plot for methylation of CTCF peaks over TEs
+#
+#methylc <- list.files("5_ctcf_methyl/", pattern = "methylC")
+#methylc <- methylc[!grepl("kb.*methylC", methylc)]
+#final = data.frame()
+#for (i in 1:60) {
+#  methyl = read.csv(paste0("5_ctcf_methyl/", methylc[[i]]), sep = "", header = F)
+#  colnames(methyl) = c("chr", "startCTCF", "endCTCF", "motiflength", "CTCFstrand", "database", "score", "pval", "qval", "motif", "seqnames", #"start", "end", "type", "percent", "strand", "depth", "overlap")
+#  methyl = methyl[methyl$depth >= 4,]
+#  methyl$mC = round(methyl$percent*methyl$depth)
+#  methyl$ID = paste(methyl$chr,methyl$startCTCF,methyl$endCTCF)
+#  
+#  collapsed_df <- methyl %>%
+#      group_by(ID) %>%
+#      summarise(
+#        Sum_mCG = sum(mC),
+#        Sum_CG = sum(depth)
+#      )
+#  collapsed_df$percent = collapsed_df$Sum_mCG/collapsed_df$Sum_CG
+#  name=gsub(".CG.methylC.gz","", methylc[[i]])
+#  avg=mean(collapsed_df$percent)
+#  row=c(name,avg)
+#  final=rbind(final,row)
+#}
+#colnames(final) = c("sample","averagemC")
+#final = separate_wider_delim(final, cols = sample, delim = "_", names = c("tissue", "TF","peaks","type",
+#                                                                          "cell","treatment","rep"))
+#
+#GSC = final[final$cell == "B36" | final$cell == "B49" | final$cell == "B66",]
+#GSC$peaks <- as.factor(GSC$peaks)
+#GSC$averagemC <- as.numeric(GSC$averagemC)
+#
+#p = ggplot(GSC, aes(x=peaks, y=averagemC, fill=treatment)) + geom_boxplot() + theme(panel.grid.major = element_blank(), panel.grid.minor = #element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black")) + ylab("Average mC Percent") + xlab("Peak #Type")
+#
+#pdf("5_ctcf_methyl/GSC_TEctcf_averagemC.pdf")
+#print(p)
+#dev.off()
+
+```
+
+
+```{r}
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/3_CTCF")
+
+data = read.table("6_TAD_ctcf/ctcf_TAD_change_overlap.txt", header=TRUE)
+data=data[,c(1,3,5:8)]
+data$bound_type=c("DP Boundary","DMSO Boundary","Stable Boundary")
+colnames(data)=c("bound_type","CTCF Lost","CTCF Gained","Both","Unchanged","No CTCF")
+data1 = data |> pivot_longer(cols = !bound_type, names_to = "peak_type", values_to = "count")
+data1$count = as.numeric(data1$count)
+
+data1$bound_type <- factor(data1$bound_type, levels=c("Stable Boundary", "DMSO Boundary", "DP Boundary"))
+data1$peak_type <- factor(data1$peak_type, levels=c("CTCF Gained","Both","CTCF Lost","Unchanged","No CTCF"))
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/ctcf_boundary_changes.pdf"),height=5,width=5)
+p <- ggplot(data1, aes(x=bound_type, y=count, fill=peak_type)) + geom_bar(position="fill", stat="identity", width=0.7) + 
+  xlab(NULL) + ylab("Percent of TAD Boundaries") + ylim(0,7000) + 
+  theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+        panel.background = element_blank(), axis.line = element_line(colour = "black")) + 
+  scale_y_continuous(expand = c(0, 0)) + scale_x_discrete(expand = c(0, 0)) +
+  scale_fill_manual(values = c("#f44336","purple","#3d85c6","#F6caba","grey")) + 
+  labs(fill="CTCF Peak Type")
+print(p)
+dev.off()
+
+Fig_3B = p
+
+data_matrix <- matrix(c(260, 30+260+9+353+21, 48, 152+48+12+397+27, 658, 429+658+55+3141+290), 
+                      nrow = 3, 
+                      byrow = TRUE)
+
+# Name your rows and columns for clarity
+rownames(data_matrix) <- c("Group A", "Group B", "Group C")
+colnames(data_matrix) <- c("Success", "Failure")
+
+# Run the test
+chisq_result <- chisq.test(data_matrix)
+chisq_result
+chisq_result$p.value
+
+data_matrix <- matrix(c(30, 30+260+9+353+21, 152, 152+48+12+397+27, 429, 429+658+55+3141+290), 
+                      nrow = 3, 
+                      byrow = TRUE)
+
+# Name your rows and columns for clarity
+rownames(data_matrix) <- c("Group A", "Group B", "Group C")
+colnames(data_matrix) <- c("Success", "Failure")
+
+# Run the test
+chisq_result <- chisq.test(data_matrix)
+chisq_result
+chisq_result$p.value
+
+```
+
+
+```{r}
+###CTCF peaks cumulative binding over TADs without differential CTCFf
+files=list.files("6_TAD_ctcf/", pattern="stable.bed")
+
+final=data.frame()
+for (i in 1:length(files)) {
+  data = read.table(paste0("6_TAD_ctcf/",files[[i]]))
+  data=data[,c(1:3,27:42)]
+  data1 <- data %>%
+    group_by(V1,V2,V3) %>%
+    dplyr::summarise(across(V30:V41, sum), .groups = 'drop')
+  data2 = data.frame(chr = data1$V1,
+                     start = data1$V2,
+                     end = data1$V3,
+                     B36_DMSO=(data1$V30+data1$V31)/2,
+                     B36_DP=(data1$V32+data1$V33)/2,
+                     B49_DMSO=(data1$V34+data1$V35)/2,
+                     B49_DP=(data1$V36+data1$V37)/2,
+                     B66_DMSO=(data1$V38+data1$V39)/2,
+                     B66_DP=(data1$V40+data1$V41)/2)
+  data3 = data2 |> pivot_longer(cols = !c(chr,start,end), names_to = "sample", values_to = "count")
+  data3 = data3 %>%
+    separate(col = sample,into = c("cell", "Treatment"),sep = "_",remove = FALSE)
+  data3$bound_type = gsub("_CTCF_stable.bed","",files[[i]])
+  final = rbind(final,data3)
+}
+final$bound_type=ifelse(final$bound_type=="dynamic_strengthened_sig", "DP Boundary", 
+                        ifelse(final$bound_type=="dynamic_weakened_sig", "DMSO Boundary", "Stable Boundary"))
+
+final$bound_type = factor(final$bound_type, levels=c("Stable Boundary","DMSO Boundary","DP Boundary"))
+
+stat.test <- final %>%
+  group_by(cell,bound_type) %>%
+  t_test(count ~ Treatment, paired=TRUE) %>%
+  add_significance() %>% add_xy_position(fun = "max", x = "cell", group="Treatment")
+stat.test$xmax = stat.test$xmax - 0.2
+
+
+p = ggboxplot(final, x = "cell", y = "count",
+              fill = "Treatment", outliers = FALSE,
+              #add = "jitter",
+              facet.by = "bound_type", scales = "free_y", short.panel.labs = TRUE, xlab = "Cell Line", ylab = "Cummulative CTCF Signal") +
+  theme(text = element_text(size = 14), axis.text.x = element_text(size = 10, angle = 45, hjust = 1), legend.position = "right") + 
+  stat_pvalue_manual(stat.test[stat.test$cell=="B36",], label = "p.signif", y.position = 500, x = "cell", size = 4, remove.bracket = TRUE, hide.ns = TRUE) + 
+  stat_pvalue_manual(stat.test[stat.test$cell=="B49",], label = "p.signif", y.position = 500, x = "cell", size = 4, remove.bracket = TRUE, hide.ns = TRUE) +
+  stat_pvalue_manual(stat.test[stat.test$cell=="B66",], label = "p.signif", y.position = 500, x = "cell", size = 4, remove.bracket = TRUE, hide.ns = TRUE) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.1)))
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/stable_ctcf_boundary_cummulative.pdf"),height=5,width=8)
+print(p)
+dev.off()
+
+Fig_3E = p
+
+```
+
+```{r}
+bound_ctcf = read.csv("6_TAD_ctcf/dynamic_sig_withDI_slop25kb_ctcf.bed", sep = "\t", header = FALSE)
+bound_ctcf = bound_ctcf[,c(1:3,6,9,12,15,18,22,27:48)]
+
+cols = colnames(bound_ctcf)
+bound_ctcf_collapsed <- bound_ctcf %>% group_by(V1,V2,V3) %>%
+  dplyr::summarise(across(c(cols[4:9]), mean), across(c(cols[13:24]), sum))
+
+bound_mega = data.frame("B36_DMSO" = bound_ctcf_collapsed[,4],
+                             "B36_DP" = bound_ctcf_collapsed[,5],
+                             "B49_DMSO" = bound_ctcf_collapsed[,6],
+                             "B49_DP" = bound_ctcf_collapsed[,7],
+                             "B66_DMSO" = bound_ctcf_collapsed[,8],
+                             "B66_DP" = bound_ctcf_collapsed[,9])
+
+ctcf_mega = data.frame("B36_DMSO" = (bound_ctcf_collapsed[,10] + bound_ctcf_collapsed[,11])/2,
+                        "B36_DP" = (bound_ctcf_collapsed[,12] + bound_ctcf_collapsed[,13])/2,
+                        "B49_DMSO" = (bound_ctcf_collapsed[,14] + bound_ctcf_collapsed[,15])/2,
+                        "B49_DP" = (bound_ctcf_collapsed[,16] + bound_ctcf_collapsed[,17])/2,
+                        "B66_DMSO" = (bound_ctcf_collapsed[,18] + bound_ctcf_collapsed[,19])/2,
+                        "B66_DP" = (bound_ctcf_collapsed[,20] + bound_ctcf_collapsed[,21])/2)
+
+scaled_bound = t(scale(t(as.matrix(bound_mega))))
+colnames(scaled_bound) = c("B36_DMSO","B36_DP","B49_DMSO","B49_DP","B66_DMSO","B66_DP")
+scaled_ctcf = t(scale(t(as.matrix(ctcf_mega))))
+colnames(scaled_ctcf) = c("B36_DMSO","B36_DP","B49_DMSO","B49_DP","B66_DMSO","B66_DP")
+
+col_fun = circlize::colorRamp2(c(-3, 0, 3), c("lightblue", "white", "red"))
+heatmap_TAD = ComplexHeatmap::Heatmap(as.matrix(scaled_bound),
+                                      col = col_fun,
+                                      show_row_names = FALSE, 
+                                      show_column_names = TRUE, 
+                                      name="Boundary\nDelta DI\nZ-score",
+                                      cluster_rows = TRUE,
+                                      cluster_columns = FALSE,
+                                      row_gap = unit(2, "mm"),
+                                      row_title = NULL,
+                                      use_raster = FALSE,
+                                      row_split = 2,
+                                      border = TRUE,
+                                      column_names_gp = grid::gpar(fontsize = 14),
+                                      heatmap_legend_param = list(
+                                      title_gp = gpar(fontsize = 14),
+                                      labels_gp = gpar(fontsize = 14)))
+#print(heatmap_TAD)
+
+
+col_fun = circlize::colorRamp2(c(-3, 0, 3), c("skyblue", "white", "darkorange3"))
+heatmap_ctcf = ComplexHeatmap::Heatmap(as.matrix(scaled_ctcf),
+                                       col = col_fun,
+                                       show_row_names = FALSE, 
+                                       show_column_names = TRUE, 
+                                       name="CTCF Signal\nZ-score",
+                                       cluster_rows = TRUE,
+                                       cluster_columns = FALSE,
+                                       row_gap = unit(2, "mm"),
+                                       row_title = NULL,
+                                       use_raster = FALSE,
+                                       border = TRUE,
+                                       column_names_gp = grid::gpar(fontsize = 14),
+                                       heatmap_legend_param = list(
+                                       title_gp = gpar(fontsize = 14),
+                                       labels_gp = gpar(fontsize = 14)))
+#print(heatmap_ctcf)
+
+pdf("tad_bd_ctcf.DI_delta_ctcf_mega_zscore.pdf",height=5,width=6)
+print(heatmap_TAD+heatmap_ctcf)
+dev.off()
+
+tmp <- tempfile(fileext = ".png")
+png(tmp, width = 5, height = 5, units = "in", res = 600)
+print(heatmap_TAD+heatmap_ctcf)
+dev.off()
+
+p_img <- png::readPNG(tmp)
+
+p_gg <- ggplot() +
+  annotation_raster(p_img, xmin = 0, xmax = 1, ymin = 0, ymax = 1) +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), clip = "on") +
+  scale_x_continuous(breaks = NULL, expand = c(0, 0)) +
+  scale_y_continuous(breaks = NULL, expand = c(0, 0)) +
+  theme_void() +
+  theme(
+    plot.margin    = margin(0, 0, 0, 0),
+    axis.text      = element_blank(),
+    axis.ticks     = element_blank(),
+    axis.title     = element_blank(),
+    panel.border   = element_blank(),
+    panel.background = element_blank()
+  )
+
+Fig_3F = p_gg
+
+```
+
+```{r}
+#Fig2
+layout <- "#AAAAA#BBB#####
+           #AAAAA#BBB#####
+           #######CCCDDDDD
+           #######CCCDDDDD
+           #######EEEEEFFF
+           #######EEEEEFFF
+           "
+
+Fig3 <- wrap_plots(Fig_3A, Fig_3B, Fig_3D, Fig_3E, Fig_3F, Fig_3G, design = layout) &
+    theme(plot.margin = margin(15, 15, 15, 15))
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/Full_Figure3test.pdf"), width = 24, height = 24)
+print(Fig3)
+dev.off()
+
+#Supp Fig4
+layout <- "AAAAAAA#BBBBBBBB#CCCCCCCC
+           AAAAAAA#BBBBBBBB#CCCCCCCC
+           DDDDDD###################
+           DDDDDD###################
+           DDDDDD###################
+           EEEEEE###################
+           EEEEEE###################
+           EEEEEE###################
+           "
+
+Supp_Fig4 <- wrap_plots(Supp_4A, Supp_4B, Supp_4C, Supp_4D, Supp_4E, design = layout) &
+    theme(plot.margin = margin(25, 25, 25, 25)) +
+  plot_layout(widths = c(1, 1, 1))
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/Full_Supp_Figure4test.pdf"), width = 32, height = 18)
+print(Supp_Fig4)
+dev.off()
+
+```
+
+
+```{r}
+#bound_ctcf = read.csv("6_TAD_ctcf/dynamic_sig_withDI_slop25kb_ctcf.bed", sep = "\t", header = FALSE)
+##bound_ctcf[,48] = paste0(bound_ctcf$V27,":",bound_ctcf$V28,"-",bound_ctcf$V29)
+#bound_ctcf[,48] = paste0(bound_ctcf$V27,":",bound_ctcf$V28-2000,"-",bound_ctcf$V29+2000)
+#bound_ctcf = bound_ctcf[,c(1:3,6,9,12,15,18,22,27:48)]
+#
+#methylc <- list.files("4_methyl/", pattern = "2kb.CG.methylC")
+#final = data.frame()
+#for (i in 1:12) {
+#  methyl1 = read.csv(paste0("4_methyl/", methylc[[0+i]]), sep = "", header = F)
+#  methyl2 = read.csv(paste0("4_methyl/", methylc[[40+i]]), sep = "", header = F)
+#  methyl3 = read.csv(paste0("4_methyl/", methylc[[20+i]]), sep = "", header = F)
+#  colnames(methyl1) = c("chr", "startCTCF", "endCTCF", "seqnames", "start", "end", "type", "percent", "strand", "depth", "overlap")
+#  colnames(methyl2) = c("chr", "startCTCF", "endCTCF", "seqnames", "start", "end", "type", "percent", "strand", "depth", "overlap")
+#  colnames(methyl3) = c("chr", "startCTCF", "endCTCF", "seqnames", "start", "end", "type", "percent", "strand", "depth", "overlap")
+#  methyl1 = methyl1[methyl1$depth > 4,]
+#  methyl2 = methyl2[methyl2$depth > 4,]
+#  methyl3 = methyl3[methyl3$depth > 4,]
+#  methyl1$mC = round(methyl1$percent*methyl1$depth)
+#  methyl1$ID = paste0(methyl1$chr,":",methyl1$startCTCF,"-",methyl1$endCTCF)
+#  methyl2$mC = round(methyl2$percent*methyl2$depth)
+#  methyl2$ID = paste0(methyl2$chr,":",methyl2$startCTCF,"-",methyl2$endCTCF)
+#  methyl3$mC = round(methyl3$percent*methyl3$depth)
+#  methyl3$ID = paste0(methyl3$chr,":",methyl3$startCTCF,"-",methyl3$endCTCF)
+#  methyl = rbind(methyl1,methyl2)
+#  #methyl = rbind(methyl,methyl3)
+#  
+#  #collapsed_df <- methyl %>%
+#  #    group_by(ID) %>%
+#  #    dplyr::summarise(
+#  #      Sum_mCG = sum(mC),
+#  #      Sum_CG = sum(depth)
+#  #    )
+#  #collapsed_df$percent = collapsed_df$Sum_mCG/collapsed_df$Sum_CG
+#  
+#  collapsed_df <- methyl %>%
+#    group_by(ID) %>%
+#    dplyr::summarise(
+#      percent = mean(percent)
+#    )
+#  
+#  colnames(collapsed_df)[2]=paste0(gsub("GSC_CTCF_downSig_peaks_","",gsub(".CG.methylC","", methylc[[0+i]])))
+#  row=collapsed_df[,c(1,2)] %>% as.data.frame()
+#  
+#  if (i == 1) {
+#    final=rbind(final,row)
+#  } else {
+#    final=merge(final,row, by.x = 1, by.y = 1)
+#  }
+#}
+#bound_ctcf = bound_ctcf[bound_ctcf$V48 %in% final$ID,]
+#for (i in 1:nrow(bound_ctcf)) {
+#  bound_ctcf[i,32:43] = final[final$ID == bound_ctcf$V48[i],2:13]
+#}
+#
+#cols = colnames(bound_ctcf)
+#bound_ctcf_collapsed <- bound_ctcf %>% group_by(V1,V2,V3) %>%
+#  dplyr::summarise(across(c(cols[4:9]), mean), across(c(cols[13:24]), sum))
+#
+#bound_mega = data.frame("B36_DMSO" = bound_ctcf_collapsed[,4],
+#                        "B36_DP" = bound_ctcf_collapsed[,5],
+#                        "B49_DMSO" = bound_ctcf_collapsed[,6],
+#                        "B49_DP" = bound_ctcf_collapsed[,7],
+#                        "B66_DMSO" = bound_ctcf_collapsed[,8],
+#                        "B66_DP" = bound_ctcf_collapsed[,9])
+#
+#ctcf_mega = data.frame("B36_DMSO" = (bound_ctcf_collapsed[,10] + bound_ctcf_collapsed[,11])/2,
+#                       "B36_DP" = (bound_ctcf_collapsed[,12] + bound_ctcf_collapsed[,13])/2,
+#                       "B49_DMSO" = (bound_ctcf_collapsed[,14] + bound_ctcf_collapsed[,15])/2,
+#                       "B49_DP" = (bound_ctcf_collapsed[,16] + bound_ctcf_collapsed[,17])/2,
+#                       "B66_DMSO" = (bound_ctcf_collapsed[,18] + bound_ctcf_collapsed[,19])/2,
+#                       "B66_DP" = (bound_ctcf_collapsed[,20] + bound_ctcf_collapsed[,21])/2)
+#
+#methyl_mega = data.frame("B36_DMSO" = (bound_ctcf_collapsed[,22] + bound_ctcf_collapsed[,23])/2,
+#                         "B36_DP" = (bound_ctcf_collapsed[,24] + bound_ctcf_collapsed[,25])/2,
+#                         "B49_DMSO" = (bound_ctcf_collapsed[,26] + bound_ctcf_collapsed[,27])/2,
+#                         "B49_DP" = (bound_ctcf_collapsed[,28] + bound_ctcf_collapsed[,29])/2,
+#                         "B66_DMSO" = (bound_ctcf_collapsed[,30] + bound_ctcf_collapsed[,31])/2,
+#                         "B66_DP" = (bound_ctcf_collapsed[,32] + bound_ctcf_collapsed[,33])/2)
+#
+#scaled_bound = t(scale(t(as.matrix(bound_mega))))
+#colnames(scaled_bound) = c("B36_DMSO","B36_DP","B49_DMSO","B49_DP","B66_DMSO","B66_DP")
+#scaled_ctcf = t(scale(t(as.matrix(ctcf_mega))))
+#colnames(scaled_ctcf) = c("B36_DMSO","B36_DP","B49_DMSO","B49_DP","B66_DMSO","B66_DP")
+#
+#col_fun = circlize::colorRamp2(c(-3, 0, 3), c("lightblue", "white", "red"))
+#heatmap_TAD = ComplexHeatmap::Heatmap(as.matrix(scaled_bound),
+#                                      col = col_fun,
+#                                      show_row_names = FALSE, 
+#                                      show_column_names = TRUE, 
+#                                      name="deltaDI_Zscore",
+#                                      cluster_rows = TRUE,
+#                                      cluster_columns = FALSE,
+#                                      row_gap = unit(2, "mm"),
+#                                      row_title = NULL,
+#                                      use_raster = FALSE,
+#                                      border = TRUE)
+##print(heatmap_TAD)
+#
+#
+#col_fun = circlize::colorRamp2(c(-3, 0, 3), c("skyblue", "white", "darkorange3"))
+#heatmap_ctcf = ComplexHeatmap::Heatmap(as.matrix(scaled_ctcf),
+#                                       col = col_fun,
+#                                       show_row_names = FALSE, 
+#                                       show_column_names = TRUE, 
+#                                       name="CTCF_Zscore",
+#                                       cluster_rows = TRUE,
+#                                       cluster_columns = FALSE,
+#                                       row_gap = unit(2, "mm"),
+#                                       row_title = NULL,
+#                                       use_raster = FALSE,
+#                                       border = TRUE)
+##print(heatmap_ctcf)
+#
+#col_fun = circlize::colorRamp2(c(0,0.5, 1), c("lightblue", "white", "red"))
+#heatmap_methyl = ComplexHeatmap::Heatmap(as.matrix(methyl_mega),
+#                                         col = col_fun,
+#                                         show_row_names = FALSE, 
+#                                         show_column_names = TRUE, 
+#                                         name="mCG%",
+#                                         cluster_rows = TRUE,
+#                                         cluster_columns = FALSE,
+#                                         row_gap = unit(2, "mm"),
+#                                         row_title = NULL,
+#                                         use_raster = FALSE,
+#                                         border = TRUE)
+##print(heatmap_methyl)
+#
+#
+#pdf("tad_bd_ctcf.DI_delta_ctcf_mega_zscore.pdf",height=5,width=6)
+#print(heatmap_TAD+heatmap_ctcf)
+#dev.off()
+
+```
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

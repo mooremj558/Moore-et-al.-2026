@@ -1,0 +1,645 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+library(ComplexHeatmap)
+library(colorRamps)
+library(fastcluster)
+library(dplyr)
+library(rstatix)
+library(patchwork)
+library(ggplotify)
+library(grid)
+library(magick)
+library(cowplot)
+library(data.table)
+library(ggplot2)
+library(ggpubr)
+library(dplyr)
+library(tidyverse)
+```
+
+```{r}
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/5_snm3c/")
+meta = read.table("allcools/metadata_with_svl.tsv", header = TRUE)
+
+p = ggplot(meta, aes(x=Cell_line, y=mCGFrac, fill=Treatment)) + geom_boxplot(outliers = FALSE) + theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black")) + ylab("mCGFrac per Cell") + xlab("Cell Line")
+
+Supp_6D = p
+
+p = ggplot(meta, aes(x=Cell_line, y=mCGFrac, fill = factor(quintile, levels = rev(sort(unique(quintile)))))) + geom_boxplot(outliers = FALSE) + theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black")) + ylab("mCGFrac per Cell") + xlab("Cell Line") + labs(fill = "mCG Group")
+
+Supp_6E = p
+
+p = ggplot(meta, aes(x=Cell_line, y=svl, fill = factor(quintile, levels = rev(sort(unique(quintile)))))) + geom_boxplot(outliers = FALSE) + theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black")) + ylab("I(<=2mb) / I(>2mb) ratio per Cell") + xlab("Cell Line") + labs(fill = "mCG Group")
+
+Supp_7D = p
+
+p = ggplot(meta, aes(x = Cell_line, fill = Treatment)) + geom_bar(position="stack", width=0.7) + theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black")) + 
+  scale_y_continuous(expand = c(0, 0)) + scale_x_discrete(expand = c(0, 0)) + ylab("Number of Cells") + xlab(NULL)
+
+Supp_6A = p
+
+p = ggplot(meta, aes(x=Cell_line, y=R1InputReads, fill=Treatment)) + geom_violin() + theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black")) + ylab("Input Reads (1e6) per Cell") + xlab("Cell Line") + scale_y_continuous(labels = function(x) x / 1e6)
+
+p = ggplot(meta, aes(x=Cell_line, y=FinalmCReads, fill=Treatment)) + geom_violin() + theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black")) + ylab("Final mC Reads (1e6) per Cell") + xlab("Cell Line") + scale_y_continuous(labels = function(x) x / 1e6)
+
+Supp_6B = p
+
+p = ggplot(meta, aes(x=Cell_line, y=mCGCov, fill=Treatment)) + geom_violin() + theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black")) + ylab("mCG Coverage (1e6) per Cell") + xlab("Cell Line") + scale_y_continuous(labels = function(x) x / 1e6)
+
+Supp_6C = p
+
+p = ggplot(meta) + geom_bar(aes(x = factor(quintile, levels = rev(sort(unique(quintile)))), fill = Treatment), position = "stack") + facet_grid(~ Cell_line, switch = "x") + theme(text = element_text(size = 14), strip.placement = "outside", strip.background = element_rect(fill = NA, color = "white"), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), panel.spacing = unit(0, "cm"), axis.line = element_line(colour = "black")) + scale_y_continuous(expand = c(0, 0)) + scale_x_discrete(expand = c(0, 0)) + ylab("Number of Cells") + xlab("Group by Cell Line")
+
+Supp_6F = p
+
+p = ggplot(meta, aes(x=Cell_line, y=CisLongContact, fill=Treatment)) + geom_violin() + theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black")) + ylab("Cis-long Contacts (1e5) per Cell") + xlab("Cell Line") + scale_y_continuous(labels = function(x) x / 1e5)
+
+Supp_7A = p
+
+p = ggplot(meta, aes(x=Cell_line, y=TransContact, fill=Treatment)) + geom_violin() + theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black")) + ylab("Trans Contacts (1e5) per Cell") + xlab("Cell Line") + scale_y_continuous(labels = function(x) x / 1e5)
+
+Supp_7B = p
+
+p = ggplot(meta, aes(x=Cell_line, y=TotalContacts, fill=Treatment)) + geom_violin() + theme(text = element_text(size = 14), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = "black")) + ylab("Total Contacts (1e5) per Cell") + xlab("Cell Line") + scale_y_continuous(labels = function(x) x / 1e5)
+
+Supp_7C = p
+
+
+```
+
+```{r}
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/5_snm3c/")
+eucl_dist = read.table("allcools/cell_cell_euclidean.tsv", header = TRUE)
+eucl_mat <- as.matrix(eucl_dist)
+
+parts <- do.call(rbind, strsplit(rownames(eucl_mat), "_"))
+
+Cell <- parts[,1]
+Treatment <- parts[,2]
+
+# Blue-to-yellow palette
+col_fun <- colorRamps::blue2yellow(100)
+
+hc <- fastcluster::hclust(as.dist(eucl_mat))
+ord <- hc$order
+
+mat_ord <- eucl_mat[ord, ord]
+
+Cell_ord <- Cell[ord]
+Treatment_ord <- Treatment[ord]
+
+row_anno <- rowAnnotation(
+  Cell = Cell_ord,
+  Treatment = Treatment_ord,
+  col = list(
+    Cell = structure(
+      RColorBrewer::brewer.pal(length(unique(Cell_ord)), "Set2"),
+      names = unique(Cell_ord)
+    ),
+    Treatment = c(DMSO="#F8766D", DP="#00BFC4")
+  )
+)
+
+col_anno <- HeatmapAnnotation(
+  Cell = Cell_ord,
+  Treatment = Treatment_ord,
+  col = list(
+    Cell = structure(
+      RColorBrewer::brewer.pal(length(unique(Cell_ord)), "Set2"),
+      names = unique(Cell_ord)
+    ),
+    Treatment = c(DMSO="#F8766D", DP="#00BFC4")
+  ),
+  show_legend = FALSE
+)
+
+# Step 1: create heatmap object with row clustering
+ht <- Heatmap(
+  mat_ord,
+  name = "Euclidean\nDistance",
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,  # we will reorder manually
+  left_annotation = row_anno,
+  top_annotation = col_anno,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  use_raster = TRUE,
+  raster_quality = 2,
+  col = col_fun
+)
+
+
+# Step 4: draw heatmap
+draw(ht)
+
+Fig_5D = ht
+
+```
+
+```{r}
+
+cells <- rownames(eucl_mat)
+
+# get indices of upper triangle (excluding diagonal)
+idx <- which(upper.tri(eucl_mat), arr.ind = TRUE)
+
+dt <- data.table(
+  cell1 = cells[idx[,1]],
+  cell2 = cells[idx[,2]],
+  value = eucl_mat[idx]
+)
+
+dt[, c("cell1_val1","cell1_val2") := tstrsplit(cell1, "_", keep = 1:2)]
+dt[, c("cell2_val1","cell2_val2") := tstrsplit(cell2, "_", keep = 1:2)]
+dt[, val1_match := cell1_val1 == cell2_val1]
+dt[, val2_match := cell1_val2 == cell2_val2]
+df = dt %>% as.data.frame()
+
+df["type"] = ifelse(df$val1_match==TRUE & df$val2_match==TRUE, "Intra-cell\nLine", ifelse(df$val1_match==FALSE & df$val2_match==TRUE,"Inter-cell\nLine","cross_treat"))
+
+df_sub = df[df$type!="cross_treat" & df$cell1_val1 %in% c("B36","B49","B66") & df$cell2_val1 %in% c("B36","B49","B66"),]
+
+stat_within <- df_sub %>%
+  group_by(cell1_val2) %>%
+  wilcox_test(value ~ type) %>%
+  add_significance() %>%
+  add_xy_position(x = "cell1_val2", dodge = 0.8)
+
+stat_between <- df_sub %>%
+  group_by(type) %>%
+  wilcox_test(value ~ cell1_val2) %>%
+  add_significance()
+
+x_levels <- levels(factor(df_sub$cell1_val2))
+dodge <- 0.8
+offset <- dodge / 2
+
+stat_between <- stat_between %>%
+  mutate(
+    xmin = ifelse(type == "Inter-cell\nLine", 1 - offset/2, 1 + offset/2),
+    xmax = ifelse(type == "Inter-cell\nLine", 2 - offset/2, 2 + offset/2),
+    y.position = max(df_sub$value) * c(1.1, 1.2)
+  )
+
+stat_between <- stat_between %>%
+  mutate(y.position = y.position + 0.1)
+
+p = ggplot(df_sub, aes(x = cell1_val2, y = value, fill = type)) +
+    geom_violin(position = position_dodge(0.8)) +
+    
+    stat_pvalue_manual(stat_within, label = "p.signif", tip.length = 0.01) +
+    stat_pvalue_manual(stat_between, label = "p.signif", tip.length = 0.01) +
+    
+    theme(text = element_text(size = 14),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black")
+    ) +
+    ylab("Euclidean Distance") +
+    xlab("Treatment") +
+    labs(fill = "")
+
+Fig_5E = p
+
+```
+
+
+```{r}
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/5_snm3c/")
+eucl_dist = read.table("schicluster/cell_cell_euclidean_25kb.tsv", header = TRUE)
+eucl_mat <- as.matrix(eucl_dist)
+
+parts <- do.call(rbind, strsplit(rownames(eucl_mat), "_"))
+
+Cell <- parts[,1]
+Treatment <- parts[,2]
+
+# Blue-to-yellow palette
+col_fun <- colorRamps::blue2yellow(100)
+
+hc <- fastcluster::hclust(as.dist(eucl_mat))
+ord <- hc$order
+
+mat_ord <- eucl_mat[ord, ord]
+
+Cell_ord <- Cell[ord]
+Treatment_ord <- Treatment[ord]
+
+row_anno <- rowAnnotation(
+  Cell = Cell_ord,
+  Treatment = Treatment_ord,
+  col = list(
+    Cell = structure(
+      RColorBrewer::brewer.pal(length(unique(Cell_ord)), "Set2"),
+      names = unique(Cell_ord)
+    ),
+    Treatment = c(DMSO="#F8766D", DP="#00BFC4")
+  )
+)
+
+col_anno <- HeatmapAnnotation(
+  Cell = Cell_ord,
+  Treatment = Treatment_ord,
+  col = list(
+    Cell = structure(
+      RColorBrewer::brewer.pal(length(unique(Cell_ord)), "Set2"),
+      names = unique(Cell_ord)
+    ),
+    Treatment = c(DMSO="#F8766D", DP="#00BFC4")
+  ),
+  show_legend = FALSE
+)
+
+# Step 1: create heatmap object with row clustering
+ht <- Heatmap(
+  mat_ord,
+  name = "Euclidean\nDistance",
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,  # we will reorder manually
+  left_annotation = row_anno,
+  top_annotation = col_anno,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  use_raster = TRUE,
+  raster_quality = 2,
+  col = col_fun
+)
+
+
+# Step 4: draw heatmap
+draw(ht)
+
+Fig_5_test = ht
+
+```
+
+```{r}
+cells <- rownames(eucl_mat)
+
+# get indices of upper triangle (excluding diagonal)
+idx <- which(upper.tri(eucl_mat), arr.ind = TRUE)
+
+dt <- data.table(
+  cell1 = cells[idx[,1]],
+  cell2 = cells[idx[,2]],
+  value = eucl_mat[idx]
+)
+
+dt[, c("cell1_val1","cell1_val2") := tstrsplit(cell1, "_", keep = 1:2)]
+dt[, c("cell2_val1","cell2_val2") := tstrsplit(cell2, "_", keep = 1:2)]
+dt[, val1_match := cell1_val1 == cell2_val1]
+dt[, val2_match := cell1_val2 == cell2_val2]
+df = dt %>% as.data.frame()
+
+df["type"] = ifelse(df$val1_match==TRUE & df$val2_match==TRUE, "Intra-cell\nLine", ifelse(df$val1_match==FALSE & df$val2_match==TRUE,"Inter-cell\nLine","cross_treat"))
+
+df_sub = df[df$type!="cross_treat" & df$cell1_val1 %in% c("B36","B49","B66") & df$cell2_val1 %in% c("B36","B49","B66"),]
+
+stat_within <- df_sub %>%
+  group_by(cell1_val2) %>%
+  wilcox_test(value ~ type) %>%
+  add_significance() %>%
+  add_xy_position(x = "cell1_val2", dodge = 0.8)
+
+stat_between <- df_sub %>%
+  group_by(type) %>%
+  wilcox_test(value ~ cell1_val2) %>%
+  add_significance()
+
+x_levels <- levels(factor(df_sub$cell1_val2))
+dodge <- 0.8
+offset <- dodge / 2
+
+stat_between <- stat_between %>%
+  mutate(
+    xmin = ifelse(type == "Inter-cell\nLine", 1 - offset/2, 1 + offset/2),
+    xmax = ifelse(type == "Inter-cell\nLine", 2 - offset/2, 2 + offset/2),
+    y.position = max(df_sub$value) * c(1.1, 1.2)
+  )
+
+stat_between <- stat_between %>%
+  mutate(y.position = y.position + 0.1)
+
+p = ggplot(df_sub, aes(x = cell1_val2, y = value, fill = type)) +
+    geom_violin(position = position_dodge(0.8)) +
+    
+    stat_pvalue_manual(stat_within, label = "p.signif", tip.length = 0.01) +
+    stat_pvalue_manual(stat_between, label = "p.signif", tip.length = 0.01) +
+    
+    theme(text = element_text(size = 14),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black")
+    ) +
+    ylab("Euclidean Distance") +
+    xlab("Treatment") +
+    labs(fill = "")
+
+Fig_5_test1 = p
+
+```
+
+```{r}
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/5_snm3c/")
+peak_mCG = read.table("allcools/cell_peak_avg_mCG.tsv", header = TRUE)
+peak_mCG["mCG_group"] = sapply(strsplit(peak_mCG$group, "_"), `[`, 2)
+peak_mCG$mCG_group = paste0("Group ", peak_mCG$mCG_group)
+peak_mCG$type = ifelse(peak_mCG$type=="non", "Unchanged", ifelse(peak_mCG$type=="down","CTCF Lost", "CTCF Gained"))
+peak_mCG$mCG_group = factor(peak_mCG$mCG_group,levels = c("Group 0","Group 1","Group 2","Group 3","Group 4","Group 5","Group 6"))
+peak_mCG$type = factor(peak_mCG$type,levels = c("Unchanged","CTCF Lost","CTCF Gained"))
+
+
+p = ggboxplot(peak_mCG, x = "mCG_group", y = "value", outliers = FALSE,
+          color = "type", palette = "Set2",
+          #add = "jitter",
+          facet.by = "cell", short.panel.labs = TRUE, xlab = "mCG Group", ylab = "CTCF Peak Methylation") + 
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.1))) +
+  theme(text = element_text(size = 10), axis.text.x = element_text(size = 14, angle = 90, hjust = 1), legend.position = "right") + labs(color="Peak Type") + scale_color_manual(values = c("black","#F8766D","#3d85c6"))
+
+Fig_5F = p
+
+
+```
+
+```{r}
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/5_snm3c/higashi/0_pseudobulk_analysis/1_compartment/quintile")
+
+bdg_files <- list.files(pattern = "VC.50k.bedgraph")
+bdg_files_allchr <- bdg_files[c(seq(2, 71, by = 2))]
+
+###Input is calibrated compartment bedgraph files
+final_df = read.csv(paste0(bdg_files_allchr[1]),header = FALSE, sep="")
+colnames(final_df) = c("chr","start","end",paste0(bdg_files_allchr[1]))
+for (i in 2:length(bdg_files_allchr)) {
+  temp = read.csv(paste0(bdg_files_allchr[i]),header = FALSE, sep="")
+  colnames(temp) = c("chr","start","end",paste0(bdg_files_allchr[i]))
+  final_df <- merge(final_df, temp)
+}
+colnames(final_df) = gsub(".VC.50k.bedgraph", "", colnames(final_df))
+final_df = drop_na(final_df)
+
+###Calculate standard deviation from y=x and cutoff for alpha=0.05
+cell_lines <- c("B36", "B49", "B66", "NHA", "qNHA")
+groups <- 0:5
+
+results <- data.frame()
+
+for (cl in cell_lines) {
+  for (i in groups) {
+    
+    col_0 <- paste0(cl, "_", i)
+    col_6 <- paste0(cl, "_6")
+    
+    # compute SD and cutoff
+    sd_val <- sd(final_df[[col_0]] - final_df[[col_6]], na.rm = TRUE)
+    cutoff <- 1.96 * sd_val
+    
+    # conditions
+    diff <- abs(final_df[[col_6]] - final_df[[col_0]])
+    
+    sigBA <- sum(diff > cutoff & final_df[[col_6]] < 0 & final_df[[col_0]] > 0, na.rm = TRUE)
+    sigAB <- sum(diff > cutoff & final_df[[col_6]] > 0 & final_df[[col_0]] < 0, na.rm = TRUE)
+    
+    BA <- sum(diff < cutoff & final_df[[col_6]] < 0 & final_df[[col_0]] > 0, na.rm = TRUE)
+    AB <- sum(diff < cutoff & final_df[[col_6]] > 0 & final_df[[col_0]] < 0, na.rm = TRUE)
+    
+    AA <- sum(final_df[[col_6]] < 0 & final_df[[col_0]] < 0, na.rm = TRUE)
+    BB <- sum(final_df[[col_6]] > 0 & final_df[[col_0]] > 0, na.rm = TRUE)
+    
+    # store
+    results <- rbind(results, data.frame(
+      name = paste0(cl, "_", i),
+      cell_line = cl,
+      group = i,
+      sd = sd_val,
+      cutoff = cutoff,
+      strong_BtoA = sigBA,
+      strong_AtoB = sigAB,
+      weak_BtoA = BA,
+      weak_AtoB = AB,
+      AtoA = AA,
+      BtoB = BB
+    ))
+  }
+}
+
+plot_df <- results %>%
+  pivot_longer(
+    cols = c(strong_BtoA, strong_AtoB, weak_BtoA, weak_AtoB, AtoA, BtoB),
+    names_to = "category",
+    values_to = "count"
+  )
+
+p <- ggplot(plot_df, aes(x = factor(group), y = count, fill = factor(category, levels=c("strong_BtoA","strong_AtoB","weak_BtoA","weak_AtoB","BtoB","AtoA")))) +
+  geom_bar(position = "fill", stat = "identity") +
+  facet_wrap(~cell_line) +
+  theme_bw() +
+  theme(text = element_text(size = 14), panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank()) +
+  labs(
+    x = "Group",
+    y = "Fraction of Bins (Relative to Group 6)",
+    fill = "Compartment Type"
+  ) +
+  scale_fill_manual(values = c("strong_BtoA" = "#E7298AFF", "strong_AtoB" = "#7570B3FF", "weak_BtoA" = "#E6AB02FF", "weak_AtoB" = "#66A61EFF", "AtoA" = "#1B9E77FF", "BtoB" = "#D95F02FF"))
+
+Supp_7E = p
+
+```
+
+```{r}
+p = draw.pairwise.venn(
+   area1 = 3054,
+   area2 = 1309,
+   cross.area = 528,
+   category = c("snm3c\nDifferential\nBoundaries", "Bulk\nDifferential\nBoundaries"),
+   fill = c("steelblue", "tomato"),
+   alpha = 0.5,
+   scaled = TRUE,
+   cat.pos = c(330, 30),
+   cat.dist = c(0.07, 0.07)
+)
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/bound_overlap_bulk_snm3c.pdf"),height=5,width=5)
+print(p)
+dev.off()
+
+```
+
+```{r}
+setwd("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/5_snm3c/higashi/0_pseudobulk_analysis/2_TAD/deeptools_new")
+dt <- fread(
+    "B36_dynamic_split_matrix_new_profile.tab",
+    sep = "\t",
+    header = FALSE,
+    fill = TRUE
+)
+
+df = dt[3:16,1:40003]
+x = c("sample", "boundary", seq(-0.2, 0.2, by = 0.00001))
+colnames(df) = x
+meta <- df[, 1:2]     # e.g. B36_0 + label
+vals <- df[, 3:ncol(df)]
+
+#df_long <- cbind(meta, vals)
+df <- as.data.frame(df)
+df[, 3:40003] <- sapply(df[, 3:40003], as.numeric)
+df_longer = df %>%
+  pivot_longer(-c(sample, boundary), names_to = "pos", values_to = "value") %>%
+  mutate(pos = as.numeric(pos))
+
+p = ggplot(df_longer, aes(x = pos, y = value, color = sample)) +
+    geom_smooth(se = FALSE, method = "loess", span = 0.2, linewidth = 1) +
+    facet_wrap(~ boundary) +
+    theme_classic() +
+    labs(x = "Distance From Boundary (Mb)", y = "Average Delta DI", color = "Group") + theme(text = element_text(size = 14),
+  panel.border = element_rect(color = "black", fill = NA, linewidth = 0.6)
+)
+
+Supp_7G = p
+
+dt <- fread(
+    "B49_dynamic_split_matrix_new_profile.tab",
+    sep = "\t",
+    header = FALSE,
+    fill = TRUE
+)
+
+df = dt[3:16,1:40003]
+x = c("sample", "boundary", seq(-0.2, 0.2, by = 0.00001))
+colnames(df) = x
+meta <- df[, 1:2]     # e.g. B36_0 + label
+vals <- df[, 3:ncol(df)]
+
+#df_long <- cbind(meta, vals)
+df <- as.data.frame(df)
+df[, 3:40003] <- sapply(df[, 3:40003], as.numeric)
+df_longer = df %>%
+  pivot_longer(-c(sample, boundary), names_to = "pos", values_to = "value") %>%
+  mutate(pos = as.numeric(pos))
+
+p = ggplot(df_longer, aes(x = pos, y = value, color = sample)) +
+    geom_smooth(se = FALSE, method = "loess", span = 0.2, linewidth = 1) +
+    facet_wrap(~ boundary) +
+    theme_classic() +
+    labs(x = "Distance From Boundary (Mb)", y = "Average Delta DI", color = "Group") + theme(text = element_text(size = 14),
+  panel.border = element_rect(color = "black", fill = NA, linewidth = 0.6)
+)
+
+Supp_7H = p
+
+dt <- fread(
+    "B66_dynamic_split_matrix_new_profile.tab",
+    sep = "\t",
+    header = FALSE,
+    fill = TRUE
+)
+
+df = dt[3:16,1:40003]
+x = c("sample", "boundary", seq(-0.2, 0.2, by = 0.00001))
+colnames(df) = x
+meta <- df[, 1:2]     # e.g. B36_0 + label
+vals <- df[, 3:ncol(df)]
+
+#df_long <- cbind(meta, vals)
+df <- as.data.frame(df)
+df[, 3:40003] <- sapply(df[, 3:40003], as.numeric)
+df_longer = df %>%
+  pivot_longer(-c(sample, boundary), names_to = "pos", values_to = "value") %>%
+  mutate(pos = as.numeric(pos))
+
+p = ggplot(df_longer, aes(x = pos, y = value, color = sample)) +
+    geom_smooth(se = FALSE, method = "loess", span = 0.2, linewidth = 1) +
+    facet_wrap(~ boundary) +
+    theme_classic() +
+    labs(x = "Distance From Boundary (Mb)", y = "Average Delta DI", color = "Group") + theme(text = element_text(size = 14),
+  panel.border = element_rect(color = "black", fill = NA, linewidth = 0.6)
+)
+
+Supp_7I = p
+
+```
+
+```{r}
+#Fig5DF
+layout <- "AAAAABBBCCCC
+           AAAAABBBCCCC
+           "
+
+Fig5 <- wrap_plots(as.grob(Fig_5D), Fig_5E, Fig_5F, design = layout) &
+    theme(plot.margin = margin(15, 15, 15, 15))
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/Figure5DEF_test.pdf"), width = 20, height = 6)
+print(Fig5)
+dev.off()
+
+layout <- "AAAAABBBCCCC
+           AAAAABBBCCCC
+           "
+
+Fig5 <- wrap_plots(as.grob(Fig_5_test), Fig_5_test1, Fig_5F, design = layout) &
+    theme(plot.margin = margin(15, 15, 15, 15))
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/Figure5DEF_test1.pdf"), width = 20, height = 6)
+print(Fig5)
+dev.off()
+
+#Supp Fig6A-F
+layout <- "AAABBBCCC
+           AAABBBCCC
+           DDDEEEFFF
+           DDDEEEFFF
+           "
+
+Supp_Fig6 <- wrap_plots(Supp_6A, Supp_6B, Supp_6C, Supp_6D, Supp_6E, as.grob(Supp_6F), design = layout)
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/Supp_Figure6A_F.pdf"), width = 20, height = 12)
+print(Supp_Fig6)
+dev.off()
+
+#Supp Fig7A-E
+layout <- "AAABBBCCC
+           AAABBBCCC
+           DDDDEEEEE
+           DDDDEEEEE
+           "
+
+top_row <- plot_grid(Supp_7A, Supp_7B, Supp_7C, ncol = 3, rel_widths = c(1, 1, 1))
+bottom_row <- plot_grid(Supp_7D, Supp_7E, ncol = 2, rel_widths = c(4, 5))
+
+Supp_Fig7 = plot_grid(top_row, bottom_row, nrow = 2, rel_heights = c(1, 1))
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/Supp_Figure7A_E.pdf"), width = 20, height = 12)
+print(Supp_Fig7)
+dev.off()
+
+#Supp Fig7G-I
+layout <- "A
+           B
+           C
+           "
+
+Supp_Fig7GI <- wrap_plots(Supp_7G, Supp_7H, Supp_7I, design = layout)
+
+pdf(paste0("/scratch/mmoore/Epitherapy3D/analysis/HiC/paper_final/figures/Supp_Figure7G_I.pdf"), width = 10, height = 6)
+print(Supp_Fig7)
+dev.off()
+
+```
+
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
