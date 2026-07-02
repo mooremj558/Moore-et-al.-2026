@@ -1,0 +1,7 @@
+the different between 1,2,3 is as followed:
+
+the sign(+/-) is assigned based on three different gene density files:
+1. Coding gene + nc-gene(ncRNA)
+2. Coding gene only
+3. Coding gene including isoforms
+
